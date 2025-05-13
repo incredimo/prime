@@ -240,40 +240,205 @@ else
     # If still not running, try with elevated privileges
     if [[ "${OLLAMA_RUNNING:-false}" == "false" ]]; then
       log "Failed to start Ollama normally. Trying with elevated privileges..."
-      run_elevated pkill -f ollama 2>/dev/null || true
-      sleep 2
-      run_elevated nohup "$OLLAMA_BIN" serve > "$WORKDIR/logs/ollama_elevated.log" 2>&1 &
-      OLLAMA_PID=$!
-      log "Started Ollama with elevated privileges (PID: $OLLAMA_PID)"
-      
-      # Wait again
-      for i in $(seq 1 5); do
-        log "Checking Ollama service with elevated privileges (attempt $i/5)..."
-        if curl -s --max-time 3 "$OLLAMA_ENDPOINT/api/tags" >/dev/null 2>&1; then
-          log "🎉 SUCCESS! Ollama service is now running with elevated privileges! 🎉"
-          OLLAMA_RUNNING=true
-          break
-        fi
-        sleep 3
-      done
+
+#!/usr/bin/env bash
+#
+# prime.sh   —  WSL-aware, Ollama-powered, gemma3 agent with UI
+# --------------------------------------------------------------------
+set -euo pipefail
+IFS=$'\n\t'
+export DEBIAN_FRONTEND=noninteractive
+
+ME="$(whoami)"
+WORKDIR="$HOME/infinite_ai"
+LOG="$WORKDIR/install.log"
+
+# Determine if we need sudo
+need_sudo() {
+  if [ "$ME" = "root" ]; then
+    return 1  # False, no sudo needed
+  else
+    if command -v sudo >/dev/null 2>&1; then
+      return 0  # True, sudo exists and needed
+    else
+      echo "Error: Not running as root and sudo not available. Please install sudo or run as root."
+      exit 1
     fi
   fi
+}
+
+# Function to run commands with sudo only if needed
+run_elevated() {
+  if need_sudo; then
+    sudo "$@"
+  else
+    "$@"
+  fi
+}
+
+# Create directories and set proper permissions
+mkdir -p "$WORKDIR" "$WORKDIR/bin" "$WORKDIR/logs" "$WORKDIR/ui" "$WORKDIR/tmp"
+chmod 755 "$WORKDIR"
+chmod 755 "$WORKDIR/bin"
+
+log(){ printf "[%(%F %T)T] %s\n" -1 "$*" | tee -a "$LOG" ; }
+
+# Clean old setup if requested
+if [[ "$*" == *"--clean"* ]] || [[ "$*" == *"-c"* ]]; then
+  echo "🧹 Cleaning old installation..."
+  run_elevated pkill -f ollama 2>/dev/null || true
+  pkill -f "python.*agent.py" 2>/dev/null || true
+  run_elevated rm -rf "$WORKDIR" 2>/dev/null || true
+  run_elevated rm -f /etc/sudoers.d/90-$ME-ai 2>/dev/null || true
+  echo "✅ Cleanup complete. Starting fresh installation."
+fi
+
+install_packages() {
+  log "Installing system prerequisites..."
+  run_elevated apt-get update -y 
+  run_elevated apt-get install -y --no-install-recommends \
+    python3 python3-venv python3-pip git curl wget build-essential \
+    sqlite3 jq unzip net-tools htop tmux lsof nodejs npm
   
-  # If still not running, check if it's running on Windows side
-  if [[ "$OLLAMA_RUNNING" == "false" ]]; then
-    log "Checking if Ollama is running on Windows side..."
-    WIN_IP=$(ip route | grep default | awk '{print $3}' 2>/dev/null || echo "localhost")
-    WINDOWS_OLLAMA_URL="http://$WIN_IP:11434"
-    
-    if curl -s --max-time 3 "$WINDOWS_OLLAMA_URL/api/tags" >/dev/null 2>&1; then
-      log "🎉 Ollama found running on Windows side at $WINDOWS_OLLAMA_URL"
-      OLLAMA_URL="$WINDOWS_OLLAMA_URL"
-      OLLAMA_RUNNING=true
-      # Export this for the agent to use
-      export OLLAMA_URL="$WINDOWS_OLLAMA_URL"
+  # Check if Node.js is too old, install newer version if needed
+  NODE_VERSION=$(node -v 2>/dev/null | cut -d'v' -f2 || echo "0.0.0")
+  if [[ "$(echo "$NODE_VERSION" | cut -d'.' -f1)" -lt "14" ]]; then
+    log "Node.js is too old ($NODE_VERSION). Installing newer version..."
+    if need_sudo; then
+      curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+      sudo apt-get install -y nodejs
     else
-      log "Could not find Ollama on Windows side either."
+      curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+      apt-get install -y nodejs
     fi
+  fi
+}
+
+# ------------------------------------------------------------
+# 1.  password-less sudo setup (skip if already root)
+# ------------------------------------------------------------
+if need_sudo; then
+  log "Configuring password-less sudo for $ME…"
+  sudo bash -c "echo '$ME ALL=(ALL) NOPASSWD:ALL' >/etc/sudoers.d/90-$ME-ai && chmod 0440 /etc/sudoers.d/90-$ME-ai"
+else
+  log "Running as root, skipping sudo configuration..."
+fi
+
+# ------------------------------------------------------------
+# 2.  base system packages
+# ------------------------------------------------------------
+install_packages
+
+# ------------------------------------------------------------
+# 3.  DOWNLOAD AND INSTALL OLLAMA
+# ------------------------------------------------------------
+OLLAMA_ENDPOINT="http://127.0.0.1:11434"
+OLLAMA_BIN="$WORKDIR/bin/ollama"
+log "🔥 Installing Ollama 🔥"
+
+# Kill any existing Ollama processes
+log "Killing any existing Ollama processes..."
+pkill -f ollama 2>/dev/null || true
+sudo pkill -f ollama 2>/dev/null || true
+sleep 2
+
+# Check for port conflicts
+if lsof -i:11434 -sTCP:LISTEN 2>/dev/null; then
+  log "⚠️ Warning: Port 11434 is in use by another process!"
+  log "Attempting to kill the process..."
+  sudo lsof -i:11434 -sTCP:LISTEN -t | xargs sudo kill -9 2>/dev/null || true
+  sleep 2
+fi
+
+# Use the official install script (most reliable method)
+log "Using official Ollama install script..."
+curl -fsSL https://ollama.com/install.sh | sh
+
+# Find where it was installed
+SYSTEM_OLLAMA=$(which ollama 2>/dev/null || echo "")
+if [[ -n "$SYSTEM_OLLAMA" && -x "$SYSTEM_OLLAMA" ]]; then
+  log "Ollama installed successfully at: $SYSTEM_OLLAMA"
+  # Create a symlink in our bin directory
+  ln -sf "$SYSTEM_OLLAMA" "$OLLAMA_BIN" || {
+    log "Warning: Failed to create symlink. Using direct system path instead."
+    OLLAMA_BIN="$SYSTEM_OLLAMA"
+  }
+else
+  log "Official script failed! Trying direct download..."
+  
+  # Try downloading pre-compiled binary directly
+  log "Downloading Ollama binary directly..."
+  curl -fsSL "https://github.com/ollama/ollama/releases/latest/download/ollama-linux-amd64" -o "$OLLAMA_BIN" || {
+    log "Direct download failed. Trying alternate URL..."
+    curl -fsSL "https://ollama.com/download/ollama-linux-amd64" -o "$OLLAMA_BIN"
+  }
+
+  # Make it executable
+  if [[ -f "$OLLAMA_BIN" ]]; then
+    chmod +x "$OLLAMA_BIN"
+    log "Made Ollama binary executable."
+  else
+    log "CRITICAL FAILURE: All Ollama installation methods failed!"
+    log "Will proceed with setup, but you'll need to install Ollama manually."
+  fi
+fi
+
+# Check if we have a working Ollama binary
+if [[ -f "$OLLAMA_BIN" && -x "$OLLAMA_BIN" ]]; then
+  log "Ollama binary is ready at: $OLLAMA_BIN"
+  run_elevated chmod +x "$OLLAMA_BIN"  # Ensure it's executable
+else
+  log "Checking for system-wide Ollama..."
+  SYSTEM_OLLAMA=$(which ollama 2>/dev/null || echo "")
+  if [[ -n "$SYSTEM_OLLAMA" && -x "$SYSTEM_OLLAMA" ]]; then
+    log "Using system Ollama: $SYSTEM_OLLAMA"
+    OLLAMA_BIN="$SYSTEM_OLLAMA"
+  else
+    log "🚨 WARNING: No working Ollama binary found!"
+    log "🔄 Will continue with setup, but you need to run the Windows helper script to install Ollama on Windows."
+  fi
+fi
+
+# Start Ollama service
+OLLAMA_RUNNING=false
+if [[ -x "$OLLAMA_BIN" ]]; then
+  # Try to start it directly
+  log "Launching Ollama service from: $OLLAMA_BIN"
+  nohup "$OLLAMA_BIN" serve > "$WORKDIR/logs/ollama.log" 2>&1 &
+  OLLAMA_PID=$!
+  log "Started Ollama with PID $OLLAMA_PID"
+  
+  # Wait for it to start
+  MAX_ATTEMPTS=10
+  for i in $(seq 1 $MAX_ATTEMPTS); do
+    log "Checking Ollama service (attempt $i/$MAX_ATTEMPTS)..."
+    if curl -s --max-time 3 "$OLLAMA_ENDPOINT/api/tags" >/dev/null 2>&1; then
+      log "🎉 SUCCESS! Ollama service is now running! 🎉"
+      OLLAMA_RUNNING=true
+      break
+    fi
+    sleep 3
+  done
+  
+  # If still not running, try with elevated privileges
+  if [[ "${OLLAMA_RUNNING}" == "false" ]]; then
+    log "Failed to start Ollama normally. Trying with elevated privileges..."
+    run_elevated pkill -f ollama 2>/dev/null || true
+    sleep 2
+    run_elevated nohup "$OLLAMA_BIN" serve > "$WORKDIR/logs/ollama_elevated.log" 2>&1 &
+    OLLAMA_PID=$!
+    log "Started Ollama with elevated privileges (PID: $OLLAMA_PID)"
+    
+    # Wait again
+    for i in $(seq 1 5); do
+      log "Checking Ollama service with elevated privileges (attempt $i/5)..."
+      if curl -s --max-time 3 "$OLLAMA_ENDPOINT/api/tags" >/dev/null 2>&1; then
+        log "🎉 SUCCESS! Ollama service is now running with elevated privileges! 🎉"
+        OLLAMA_RUNNING=true
+        break
+      fi
+      sleep 3
+    done
   fi
 fi
 
@@ -290,7 +455,7 @@ fi
 # ------------------------------------------------------------
 # 5.  Pull gemma3 model if Ollama is running
 # ------------------------------------------------------------
-if [[ "${OLLAMA_RUNNING:-false}" == "true" ]]; then
+if [[ "${OLLAMA_RUNNING}" == "true" ]]; then
   log "Checking for gemma3 model..."
   if ! curl -s "$OLLAMA_ENDPOINT/api/tags" | grep -q '"name":"gemma3"'; then
     log "Pulling gemma3 model… (this may take a while)"
@@ -312,14 +477,15 @@ else
 fi
 
 # ------------------------------------------------------------
-# 6.  Create Windows helper script 
+# 6.  Create Windows helper script
 # ------------------------------------------------------------
+log "Creating Windows helper script..."
+mkdir -p "$WORKDIR"
 cat > "$WORKDIR/windows_ollama_helper.ps1" <<'PS1'
-# Windows PowerShell script to install and run Ollama
-# Save this to your Windows system and run with PowerShell
-
-Write-Host "Windows Ollama Helper for WSL"
-Write-Host "============================"
+# Windows helper script for Ollama
+Write-Host "Ollama Helper for Windows" -ForegroundColor Cyan
+Write-Host "This script will install and start Ollama on Windows for use with WSL" -ForegroundColor Cyan
+Write-Host ""
 
 # Check if Ollama is already installed
 $ollamaPath = "$env:LOCALAPPDATA\Ollama\ollama.exe"
@@ -341,16 +507,17 @@ if (Test-Path $ollamaPath) {
     Write-Host "Ollama installation completed."
 }
 
-# Check if Ollama service is running
+# Check if Ollama is running
 $ollamaRunning = $false
 try {
     $response = Invoke-WebRequest -Uri "http://localhost:11434/api/tags" -TimeoutSec 2 -ErrorAction SilentlyContinue
     if ($response.StatusCode -eq 200) {
+        Write-Host "Ollama is already running."
         $ollamaRunning = $true
-        Write-Host "Ollama service is already running."
     }
 } catch {
-    Write-Host "Ollama service is not running."
+    Write-Host "Ollama is not running."
+    $ollamaRunning = $false
 }
 
 # Start Ollama if it's not running
@@ -434,94 +601,19 @@ pip install --upgrade pip
 pip install fastapi uvicorn duckdb tiktoken watchdog requests jinja2 aiofiles websockets python-multipart sse-starlette
 
 # ------------------------------------------------------------
-# 8.  immutable logger (never self-modified)
-# ------------------------------------------------------------
-cat > infra/logger.py <<'PY'
-import datetime, pathlib, sys, os, json, threading, queue
-
-WORKDIR = pathlib.Path(__file__).resolve().parents[1]
-LOG_DIR = WORKDIR / "logs"
-LOG_DIR.mkdir(exist_ok=True)
-
-# Create a queue for logs that can be consumed by the UI
-log_queue = queue.Queue(maxsize=1000)  # Limit to prevent memory issues
-log_listeners = set()
-
-def log(msg: str, level="INFO"):
-    """Log a message to console, file, and make it available to UI"""
-    stamp = datetime.datetime.now().strftime("%F %T")
-    line = f"[{stamp}] {msg}"
-    print(line, flush=True)
-    
-    # Write to log file
-    with open(LOG_DIR / f"agent_{datetime.date.today()}.log", "a") as f:
-        f.write(line + "\n")
-    
-    # Add to queue for UI
-    log_entry = {
-        "timestamp": stamp,
-        "message": msg,
-        "level": level
-    }
-    
-    try:
-        log_queue.put_nowait(log_entry)
-    except queue.Full:
-        # If queue is full, remove oldest item
-        try:
-            log_queue.get_nowait()
-            log_queue.put_nowait(log_entry)
-        except:
-            pass  # If concurrent access issues, just skip this log for the queue
-    
-    # Notify all listeners
-    for callback in log_listeners:
-        try:
-            callback(log_entry)
-        except:
-            pass  # Ignore errors in callbacks
-
-def get_recent_logs(limit=100):
-    """Get recent logs for UI display"""
-    logs = []
-    # Copy from queue without removing items
-    try:
-        q_size = log_queue.qsize()
-        for _ in range(min(limit, q_size)):
-            item = log_queue.get()
-            logs.append(item)
-            log_queue.put(item)  # Put it back
-    except:
-        pass  # Ignore queue access issues
-    return logs
-
-def add_log_listener(callback):
-    """Add a callback function that will be called for each new log entry"""
-    log_listeners.add(callback)
-    return callback
-
-def remove_log_listener(callback):
-    """Remove a log listener"""
-    if callback in log_listeners:
-        log_listeners.remove(callback)
-PY
-
-# ------------------------------------------------------------
-# 9.  agent.py  —  now powered by Ollama with Web UI
+# 8.  Create agent.py with proper Ollama handling
 # ------------------------------------------------------------
 cat > agent.py <<'PY'
 #!/usr/bin/env python3
-import os, sys, subprocess, uuid, sqlite3, pathlib, json, importlib.util
-import datetime, threading, textwrap, re, requests, time, asyncio
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Depends, Form
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+import os, sys, time, json, re, subprocess, threading, asyncio, uuid, textwrap
+import datetime, pathlib, queue, sqlite3
+from typing import List, Dict, Any, Optional
+import requests
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Form
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
-from pydantic import BaseModel
-from typing import List, Dict, Any, Optional
-from infra.logger import log, get_recent_logs, add_log_listener, remove_log_listener
 
 # --------------------------- CONFIG ---------------------------
 WORKDIR    = pathlib.Path(__file__).resolve().parent
@@ -533,57 +625,31 @@ API_PORT   = int(os.getenv("INFINITE_AI_PORT", 8000))
 UI_PORT    = int(os.getenv("INFINITE_AI_UI_PORT", 8080))
 # --------------------------------------------------------------
 
-# ---------- Thread-safe SQLite connection ----------
-_thread_local = threading.local()
-
-def get_connection():
-    if not hasattr(_thread_local, "conn"):
-        _thread_local.conn = sqlite3.connect(DB_PATH)
-    return _thread_local.conn
-
-def get_cursor():
-    return get_connection().cursor()
-
-# ---------- memory ----------
-def init_db():
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("""CREATE TABLE IF NOT EXISTS convo
-               (id INTEGER PRIMARY KEY, ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                role TEXT, content TEXT)""")
-    cur.execute("""CREATE TABLE IF NOT EXISTS history
-               (id INTEGER PRIMARY KEY, ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                goal TEXT, status TEXT DEFAULT 'completed', 
-                output TEXT, duration INTEGER)""")
-    conn.commit()
-
-# Initialize the database
-init_db()
-
-def remember(r, c): 
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("INSERT INTO convo(role,content) VALUES(?,?)", (r,c))
-    conn.commit()
-
-def save_history(goal, status, output, duration):
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("INSERT INTO history(goal,status,output,duration) VALUES(?,?,?,?)",
-                (goal, status, output, duration))
-    conn.commit()
+# Create a logger
+def log(message):
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{timestamp}] {message}")
     
-def get_history(limit=50):
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT id, ts, goal, status, output, duration FROM history ORDER BY ts DESC LIMIT ?", 
-                (limit,))
-    columns = ['id', 'timestamp', 'goal', 'status', 'output', 'duration']
-    return [dict(zip(columns, row)) for row in cur.fetchall()]
+    # Also log to file
+    log_file = WORKDIR / "logs" / "agent.log"
+    with open(log_file, "a") as f:
+        f.write(f"[{timestamp}] {message}\n")
+
+# Initialize FastAPI
+app = FastAPI()
+app.mount("/static", StaticFiles(directory=str(WORKDIR / "ui" / "static")), name="static")
+templates = Jinja2Templates(directory=str(WORKDIR / "ui" / "templates"))
 
 # Active tasks tracking
 active_tasks = {}
 ws_connections = set()
+
+# Memory for conversation history
+memory = []
+def remember(role, content):
+    memory.append({"role": role, "content": content})
+    if len(memory) > 20:  # Keep last 20 messages
+        memory.pop(0)
 
 # ---------- Ollama wrapper ----------
 def ollama_chat(prompt:str) -> str:
@@ -594,12 +660,42 @@ def ollama_chat(prompt:str) -> str:
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            payload = {"model": MODEL,
-                    "messages":[{"role":"system","content":
-                        "You are an autonomous, root-capable agent inside WSL. "
-                        "Return exactly one code block starting with #SH or #PY, "
-                        "or #DONE when finished, or #SELFUPDATE followed by python code to replace agent.py."},
-                        {"role":"user","content":prompt}]}
+            # First check if Ollama is running
+            try:
+                check_response = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
+                check_response.raise_for_status()
+                models_data = check_response.json().get("models", [])
+                if not any(MODEL in model.get("name", "") for model in models_data):
+                    log(f"Warning: Model {MODEL} not found in available models")
+                    return f"""#PY
+print("ERROR: The required model {MODEL} is not available.")
+print("Please ensure Ollama is running with the correct model.")
+"""
+            except requests.RequestException as e:
+                log(f"Ollama check failed: {e}")
+                if attempt < max_retries - 1:
+                    log(f"Retrying Ollama check in 5 seconds...")
+                    time.sleep(5)
+                else:
+                    log("Failed to connect to Ollama after multiple attempts.")
+                    return f"""#PY
+print("ERROR: Could not connect to Ollama LLM service.")
+print("Make sure Ollama is running at {OLLAMA_URL}.")
+print("You can:")
+print("1. Start Ollama manually with 'ollama serve'")
+print("2. Or use the Windows helper script in {WORKDIR}")
+"""
+
+            # Prepare the payload
+            payload = {
+                "model": MODEL,
+                "messages": [
+                    {"role": "system", "content": "You are an autonomous, root-capable agent inside WSL. "
+                     "Return exactly one code block starting with #SH or #PY, "
+                     "or #DONE when finished, or #SELFUPDATE followed by python code to replace agent.py."},
+                    {"role": "user", "content": prompt}
+                ]
+            }
             
             # Improved error handling for Ollama API
             response = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=600)
@@ -2150,6 +2246,7 @@ echo "
 💡 Options:
   bash prime.sh --clean  # Clean existing installation before setup
 "
+
 
 
 
