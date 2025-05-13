@@ -54,7 +54,9 @@ Append-Content -FilePath "src/header/main.sh" -OutputFile $outputFile
 
 # 2. Utility functions
 Write-Host "Adding utility functions..."
-Append-Directory -DirectoryPath "src/functions" -OutputFile $outputFile -FilePattern "*.sh"
+Append-Content -FilePath "src/functions/utils.sh" -OutputFile $outputFile
+Append-Content -FilePath "src/functions/cleanup.sh" -OutputFile $outputFile
+Append-Content -FilePath "src/functions/packages.sh" -OutputFile $outputFile
 
 # 3. Ollama installation and service
 Write-Host "Adding Ollama components..."
