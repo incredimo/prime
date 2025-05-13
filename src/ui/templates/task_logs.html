@@ -3,185 +3,392 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Infinite AI - Task Logs</title>
+    <title>Infinite AI - Task Details</title>
     <link rel="stylesheet" href="/static/css/bootstrap.min.css">
-    <link rel="stylesheet" href="/static/css/styles.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
     <style>
-        .log-list {
-            max-height: 300px;
-            overflow-y: auto;
-            border: 1px solid #dee2e6;
-            border-radius: 0.25rem;
-            padding: 0.5rem;
-            margin-bottom: 1rem;
-        }
-        .log-card {
-            margin-bottom: 0.5rem;
-            cursor: pointer;
-        }
-        .log-card:hover {
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             background-color: #f8f9fa;
         }
-        .log-content {
-            border: 1px solid #dee2e6;
-            border-radius: 0.25rem;
-            padding: 1rem;
-            min-height: 400px;
-            max-height: 600px;
+        
+        .navbar {
+            background-color: #343a40 !important;
+            box-shadow: 0 2px 4px rgba(0,0,0,.1);
+        }
+        
+        .terminal {
+            background-color: #212529;
+            color: #cccccc;
+            font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+            font-size: 0.9rem;
+            padding: 1.5rem;
+            border-radius: 0.5rem;
             overflow-y: auto;
             white-space: pre-wrap;
-            font-family: monospace;
-            background-color: #f8f9fa;
+            word-wrap: break-word;
+            height: calc(100vh - 250px);
+            position: relative;
         }
-        .badge-system-to-llm { background-color: #6c757d; }
-        .badge-llm-to-system { background-color: #28a745; }
-        .badge-system-shell-execution { background-color: #dc3545; }
-        .badge-system-shell-output { background-color: #fd7e14; }
-        .badge-user-to-system { background-color: #007bff; }
-        .badge-system-function-execution { background-color: #6610f2; }
-        .badge-system-task-complete { background-color: #20c997; }
-        .badge-system-error { background-color: #dc3545; }
-        .badge-system-selfupdate { background-color: #17a2b8; }
         
-        .timeline {
-            position: relative;
-            padding-left: 30px;
-        }
-        .timeline:before {
-            content: '';
-            position: absolute;
-            left: 10px;
+        .terminal-toolbar {
+            position: sticky;
             top: 0;
-            bottom: 0;
-            width: 2px;
-            background: #ddd;
-        }
-        .timeline-item {
-            position: relative;
-            margin-bottom: 20px;
-        }
-        .timeline-item:before {
-            content: '';
-            position: absolute;
-            left: -25px;
-            top: 0;
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            background: #007bff;
-        }
-        .timeline-item-user:before { background: #007bff; }
-        .timeline-item-llm:before { background: #28a745; }
-        .timeline-item-shell:before { background: #dc3545; }
-        .timeline-item-func:before { background: #6610f2; }
-        .timeline-item-complete:before { background: #20c997; }
-        .timeline-content {
-            padding: 10px;
-            border-radius: 5px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-            background: #fff;
-        }
-        .timeline-header {
+            background-color: #212529;
+            padding: 0.5rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            margin-bottom: 1rem;
+            z-index: 100;
             display: flex;
             justify-content: space-between;
-            padding-bottom: 5px;
-            border-bottom: 1px solid #eee;
-            margin-bottom: 10px;
+            align-items: center;
         }
-        .flex-container {
+        
+        .status-badge {
+            font-size: 0.85em;
+            padding: 0.4em 0.7em;
+            border-radius: 50rem;
+        }
+        
+        .status-running { background-color: #007bff; color: white; }
+        .status-completed { background-color: #28a745; color: white; }
+        .status-failed { background-color: #dc3545; color: white; }
+        .status-waiting { background-color: #ffc107; color: black; }
+        
+        .info-panel {
+            background-color: white;
+            border-radius: 0.5rem;
+            padding: 1.25rem;
+            margin-bottom: 1.25rem;
+            box-shadow: 0 0.125rem 0.25rem rgba(0,0,0,.075);
+        }
+        
+        .info-heading {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 1px solid #e9ecef;
+        }
+        
+        .info-list {
+            list-style-type: none;
+            padding-left: 0;
+            margin-bottom: 0;
+        }
+        
+        .info-list li {
             display: flex;
-            gap: 20px;
+            justify-content: space-between;
+            padding: 0.5rem 0;
+            border-bottom: 1px solid #f8f9fa;
         }
-        .sidebar {
-            flex: 0 0 350px;
-            height: calc(100vh - 120px);
+        
+        .info-list li:last-child {
+            border-bottom: none;
+        }
+        
+        .info-label {
+            font-weight: 500;
+            color: #495057;
+        }
+        
+        .info-value {
+            color: #212529;
+            text-align: right;
+            word-break: break-word;
+        }
+        
+        .step-indicator {
+            font-size: 0.85rem;
+            margin-top: 0.25rem;
+            color: #6c757d;
+        }
+        
+        .env-list {
+            max-height: 300px;
             overflow-y: auto;
         }
-        .main-content {
-            flex: 1;
-            height: calc(100vh - 120px);
-            overflow-y: auto;
+        
+        .task-logs-btn {
+            text-decoration: none !important;
+        }
+        
+        .task-logs-btn i {
+            margin-right: 0.5rem;
+        }
+        
+        .terminal-output {
+            line-height: 1.5;
+        }
+        
+        .command-line {
+            color: #50fa7b;
+            font-weight: bold;
+        }
+        
+        .error-output {
+            color: #ff5555;
+        }
+        
+        .success-output {
+            color: #50fa7b;
+        }
+        
+        .step-header {
+            color: #bd93f9;
+            font-weight: bold;
+            margin-top: 1rem;
+            margin-bottom: 0.5rem;
+            border-bottom: 1px solid #44475a;
+            padding-bottom: 0.25rem;
+        }
+        
+        .output-header {
+            color: #8be9fd;
+            font-weight: bold;
+            margin-top: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+        
+        .terminal-actions {
+            position: absolute;
+            top: 1rem;
+            right: 1rem;
+            display: flex;
+            gap: 0.5rem;
+            z-index: 10;
+        }
+        
+        .terminal-actions button {
+            background-color: rgba(255, 255, 255, 0.1);
+            border: none;
+            color: #ccc;
+            border-radius: 0.25rem;
+            padding: 0.25rem 0.5rem;
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .terminal-actions button:hover {
+            background-color: rgba(255, 255, 255, 0.2);
+        }
+        
+        .spinner-container {
+            display: inline-block;
+            margin-left: 0.5rem;
+        }
+        
+        #environmentDetails .command-available {
+            color: #50fa7b;
+        }
+        
+        #environmentDetails .command-unavailable {
+            color: #ff5555;
+        }
+        
+        .task-controls-row {
+            margin-bottom: 1rem;
+        }
+        
+        .terminal-mode-tabs {
+            margin-bottom: 1rem;
+        }
+        
+        .terminal-mode-tabs .nav-link {
+            padding: 0.25rem 0.75rem;
+            font-size: 0.85rem;
+        }
+        
+        .terminal-mode-tabs .nav-link.active {
+            font-weight: 600;
+        }
+        
+        .blinking-cursor::after {
+            content: '▋';
+            color: #ccc;
+            animation: blink 1s step-end infinite;
+        }
+        
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0; }
         }
     </style>
 </head>
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
-        <div class="container">
-            <a class="navbar-brand" href="/">Infinite AI Agent</a>
+        <div class="container-fluid">
+            <a class="navbar-brand" href="/">
+                <i class="bi bi-robot"></i> Infinite AI Agent
+            </a>
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
                 <span class="navbar-toggler-icon"></span>
             </button>
             <div class="collapse navbar-collapse" id="navbarNav">
                 <ul class="navbar-nav">
                     <li class="nav-item">
-                        <a class="nav-link" href="/">Home</a>
+                        <a class="nav-link" href="/"><i class="bi bi-house-fill"></i> Home</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="/logs">System Logs</a>
+                        <a class="nav-link" href="/logs"><i class="bi bi-journal-text"></i> System Logs</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="/history">Task History</a>
+                        <a class="nav-link" href="/history"><i class="bi bi-clock-history"></i> Task History</a>
                     </li>
                 </ul>
             </div>
         </div>
     </nav>
 
-    <div class="container-fluid mt-4">
-        <div class="d-flex justify-content-between align-items-center mb-4">
-            <h1>Task {{ task_id }} Logs</h1>
-            <div>
-                <a href="/task/{{ task_id }}" class="btn btn-primary">View Task</a>
-                <a href="/history" class="btn btn-secondary">Task History</a>
-            </div>
-        </div>
-
-        <div class="flex-container">
-            <div class="sidebar">
-                <div class="card">
-                    <div class="card-header d-flex justify-content-between align-items-center">
-                        <h5 class="mb-0">Log Files</h5>
-                        <button class="btn btn-sm btn-secondary" id="refreshLogs">Refresh</button>
+    <div class="container-fluid py-4">
+        <div class="row">
+            <!-- Left Column - Task Info -->
+            <div class="col-lg-3">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h2 class="mb-0">Task Details</h2>
+                </div>
+                
+                <div class="task-controls-row">
+                    <a href="/" class="btn btn-outline-secondary">
+                        <i class="bi bi-arrow-left"></i> Back to Dashboard
+                    </a>
+                    <a href="/task_logs/{{ task_id }}" class="btn btn-outline-primary ms-2 task-logs-btn">
+                        <i class="bi bi-file-text"></i> View Detailed Logs
+                    </a>
+                </div>
+                
+                <div class="info-panel">
+                    <div class="info-heading d-flex justify-content-between align-items-center">
+                        <span><i class="bi bi-info-circle"></i> Task Information</span>
+                        <span class="badge status-badge" id="taskStatusBadge">Loading...</span>
                     </div>
-                    <div class="card-body p-0">
-                        <div class="timeline p-3" id="logFiles">
-                            {% for log in logs %}
-                                {% set log_type_class = "timeline-item-" + log.type.split("_")[0] %}
-                                {% if "llm" in log.type %}
-                                    {% set log_type_class = "timeline-item-llm" %}
-                                {% elif "shell" in log.type %}
-                                    {% set log_type_class = "timeline-item-shell" %}
-                                {% elif "function" in log.type %}
-                                    {% set log_type_class = "timeline-item-func" %}
-                                {% elif "complete" in log.type %}
-                                    {% set log_type_class = "timeline-item-complete" %}
-                                {% endif %}
-                                
-                                <div class="timeline-item {{ log_type_class }}" data-log-path="{{ log.path }}">
-                                    <div class="timeline-content">
-                                        <div class="timeline-header">
-                                            <span class="badge badge-{{ log.type }}">{{ log.type.replace("_", " ").title() }}</span>
-                                            <small class="text-muted">{{ log.timestamp }}</small>
-                                        </div>
-                                        <span class="log-item-name">{{ log.filename }}</span>
+                    <ul class="info-list">
+                        <li>
+                            <span class="info-label">ID:</span>
+                            <span class="info-value" id="taskId">{{ task_id }}</span>
+                        </li>
+                        <li>
+                            <span class="info-label">Goal:</span>
+                            <span class="info-value" id="taskGoal">Loading...</span>
+                        </li>
+                        <li>
+                            <span class="info-label">Created:</span>
+                            <span class="info-value" id="taskCreated">Loading...</span>
+                        </li>
+                        <li>
+                            <span class="info-label">Duration:</span>
+                            <span class="info-value" id="taskDuration">Loading...</span>
+                        </li>
+                        <li>
+                            <span class="info-label">Current Step:</span>
+                            <span class="info-value">
+                                <span id="taskStep">Loading...</span>
+                                <div class="spinner-container" id="stepSpinner" style="display: none;">
+                                    <div class="spinner-border spinner-border-sm text-primary" role="status">
+                                        <span class="visually-hidden">Loading...</span>
                                     </div>
                                 </div>
-                            {% endfor %}
+                            </span>
+                        </li>
+                    </ul>
+                </div>
+                
+                <div class="info-panel">
+                    <div class="info-heading">
+                        <i class="bi bi-hdd-rack"></i> Environment
+                    </div>
+                    <div id="environmentDetails" class="env-list">
+                        <div class="text-center py-3">
+                            <div class="spinner-border text-primary" role="status">
+                                <span class="visually-hidden">Loading...</span>
+                            </div>
+                            <p class="mt-2 text-muted">Loading environment details...</p>
                         </div>
+                    </div>
+                </div>
+                
+                <div class="info-panel">
+                    <div class="info-heading">
+                        <i class="bi bi-tools"></i> Task Controls
+                    </div>
+                    <div class="d-grid gap-2">
+                        <button class="btn btn-outline-primary" id="refreshBtn">
+                            <i class="bi bi-arrow-clockwise"></i> Refresh Status
+                        </button>
+                        <button class="btn btn-outline-danger" id="cancelBtn" disabled>
+                            <i class="bi bi-x-circle"></i> Cancel Task
+                        </button>
                     </div>
                 </div>
             </div>
             
-            <div class="main-content">
-                <div class="card">
-                    <div class="card-header">
-                        <h5 class="mb-0">Log Content</h5>
-                        <span id="currentLogPath" class="text-muted small"></span>
+            <!-- Right Column - Terminal Output -->
+            <div class="col-lg-9">
+                <div class="card border-0 shadow-sm">
+                    <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center py-3">
+                        <h5 class="mb-0">
+                            <i class="bi bi-terminal"></i> Task Execution
+                            <span class="step-indicator" id="taskProgress">Step <span id="currentStep">0</span> of <span id="totalSteps">?</span></span>
+                        </h5>
+                        <div>
+                            <div class="form-check form-switch d-inline-block me-2">
+                                <input class="form-check-input" type="checkbox" id="autoScrollToggle" checked>
+                                <label class="form-check-label text-white" for="autoScrollToggle">Auto-scroll</label>
+                            </div>
+                            <button class="btn btn-sm btn-outline-light ms-2" id="scrollToBottomBtn">
+                                <i class="bi bi-arrow-down"></i>
+                            </button>
+                        </div>
                     </div>
-                    <div class="card-body">
-                        <div class="log-content" id="logContent">
-                            <div class="text-center text-muted">
-                                <p>Select a log file from the list to view its content</p>
+                    
+                    <div class="card-body p-0">
+                        <ul class="nav nav-tabs terminal-mode-tabs" id="outputModeTabs">
+                            <li class="nav-item">
+                                <a class="nav-link active" id="formatted-tab" data-bs-toggle="tab" href="#formatted">Formatted Output</a>
+                            </li>
+                            <li class="nav-item">
+                                <a class="nav-link" id="raw-tab" data-bs-toggle="tab" href="#raw">Raw Output</a>
+                            </li>
+                        </ul>
+                        
+                        <div class="tab-content">
+                            <div class="tab-pane fade show active" id="formatted">
+                                <div class="terminal">
+                                    <div class="terminal-actions">
+                                        <button id="copyBtn" title="Copy to clipboard">
+                                            <i class="bi bi-clipboard"></i> Copy
+                                        </button>
+                                        <button id="downloadBtn" title="Download output">
+                                            <i class="bi bi-download"></i> Download
+                                        </button>
+                                        <button id="clearBtn" title="Clear terminal">
+                                            <i class="bi bi-trash"></i> Clear
+                                        </button>
+                                    </div>
+                                    <div class="terminal-output" id="terminalOutput">
+                                        <div class="text-center py-5" id="loadingOutput">
+                                            <div class="spinner-border text-light" role="status">
+                                                <span class="visually-hidden">Loading...</span>
+                                            </div>
+                                            <p class="mt-3 text-muted">Loading task output...</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="tab-pane fade" id="raw">
+                                <div class="terminal">
+                                    <div class="terminal-actions">
+                                        <button id="rawCopyBtn" title="Copy raw output">
+                                            <i class="bi bi-clipboard"></i> Copy
+                                        </button>
+                                        <button id="rawDownloadBtn" title="Download raw output">
+                                            <i class="bi bi-download"></i> Download
+                                        </button>
+                                    </div>
+                                    <pre id="rawOutput" class="mb-0">Loading raw output...</pre>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -190,45 +397,508 @@
         </div>
     </div>
 
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
     <script src="/static/js/bootstrap.bundle.min.js"></script>
     <script>
-        document.addEventListener('DOMContentLoaded', function() {
-            const logFiles = document.getElementById('logFiles');
-            const logContent = document.getElementById('logContent');
-            const currentLogPath = document.getElementById('currentLogPath');
-            const refreshLogsBtn = document.getElementById('refreshLogs');
+        $(document).ready(function() {
+            // Elements
+            const taskId = '{{ task_id }}';
+            const terminalOutput = $('#terminalOutput');
+            const rawOutput = $('#rawOutput');
+            const loadingOutput = $('#loadingOutput');
+            const taskStatusBadge = $('#taskStatusBadge');
+            const environmentDetails = $('#environmentDetails');
+            const copyBtn = $('#copyBtn');
+            const downloadBtn = $('#downloadBtn');
+            const clearBtn = $('#clearBtn');
+            const rawCopyBtn = $('#rawCopyBtn');
+            const rawDownloadBtn = $('#rawDownloadBtn');
+            const cancelBtn = $('#cancelBtn');
+            const refreshBtn = $('#refreshBtn');
+            const autoScrollToggle = $('#autoScrollToggle');
+            const scrollToBottomBtn = $('#scrollToBottomBtn');
+            const stepSpinner = $('#stepSpinner');
             
-            // Handle log file selection
-            logFiles.addEventListener('click', function(e) {
-                // Find closest log item
-                const logItem = e.target.closest('.timeline-item');
-                if (!logItem) return;
+            // Variables
+            let autoScroll = true;
+            let ws = null;
+            let rawOutputText = '';
+            let taskCompleted = false;
+            
+            // Format functions
+            function formatDuration(seconds) {
+                if (!seconds) return 'N/A';
                 
-                // Highlight selected log
-                document.querySelectorAll('.timeline-item').forEach(item => {
-                    item.classList.remove('active', 'bg-light');
+                const minutes = Math.floor(seconds / 60);
+                const remainingSeconds = seconds % 60;
+                
+                if (minutes === 0) {
+                    return `${remainingSeconds}s`;
+                } else {
+                    return `${minutes}m ${remainingSeconds}s`;
+                }
+            }
+            
+            function formatDate(dateString) {
+                if (!dateString) return 'N/A';
+                return new Date(dateString).toLocaleString();
+            }
+            
+            function getStatusBadgeClass(status) {
+                if (status.includes('running') || status.includes('starting')) {
+                    return 'status-running';
+                } else if (status.includes('completed')) {
+                    return 'status-completed';
+                } else if (status.includes('failed') || status.includes('error')) {
+                    return 'status-failed';
+                } else if (status.includes('waiting')) {
+                    return 'status-waiting';
+                } else {
+                    return 'bg-secondary';
+                }
+            }
+            
+            // Function to highlight terminal output
+            function highlightOutput(text) {
+                // Split the output by step headers
+                const parts = text.split(/^---\s+Step\s+\d+\s+\([A-Z]+\)\s+---$/gm);
+                const stepHeaders = text.match(/^---\s+Step\s+\d+\s+\([A-Z]+\)\s+---$/gm) || [];
+                
+                let formattedOutput = '';
+                
+                if (parts.length <= 1) {
+                    // No step headers found, just return the text with error/success highlighting
+                    return highlightErrorsAndSuccess(text);
+                }
+                
+                // Process each step
+                for (let i = 0; i < stepHeaders.length; i++) {
+                    const header = stepHeaders[i];
+                    const content = parts[i + 1] || '';
+                    
+                    // Add the step header
+                    formattedOutput += `<div class="step-header">${header}</div>`;
+                    
+                    // Split the step content into code and output
+                    const outputIndex = content.indexOf('--- Output ---');
+                    
+                    if (outputIndex !== -1) {
+                        const code = content.substring(0, outputIndex).trim();
+                        const output = content.substring(outputIndex + 14).trim();
+                        
+                        // Add the code section
+                        formattedOutput += `<div class="command-line">${escapeHtml(code)}</div>`;
+                        
+                        // Add the output header
+                        formattedOutput += `<div class="output-header">--- Output ---</div>`;
+                        
+                        // Add the highlighted output
+                        formattedOutput += highlightErrorsAndSuccess(output);
+                    } else {
+                        // If we can't split it, just add the whole content
+                        formattedOutput += highlightErrorsAndSuccess(content);
+                    }
+                }
+                
+                return formattedOutput;
+            }
+            
+            // Function to highlight errors and success messages
+            function highlightErrorsAndSuccess(text) {
+                let html = escapeHtml(text);
+                
+                // Highlight error messages
+                html = html.replace(/(?:^|\n)(error|exception|traceback|fail|\[erro?r?\]|❌)/gi, 
+                                   (match) => `<span class="error-output">${match}</span>`);
+                
+                // Highlight success messages
+                html = html.replace(/(?:^|\n)(success|completed|done|✅)/gi, 
+                                   (match) => `<span class="success-output">${match}</span>`);
+                
+                // Highlight commands with $
+                html = html.replace(/(?:^|\n)\$\s+(.*?)(?=\n|$)/g, 
+                                   (match, cmd) => `<span class="command-line">$ ${cmd}</span>`);
+                
+                return html;
+            }
+            
+            // Helper function to escape HTML
+            function escapeHtml(text) {
+                return text
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;')
+                    .replace(/'/g, '&#039;');
+            }
+            
+            // Function to add blinking cursor if task is still running
+            function addBlinkingCursor(element, isRunning) {
+                // Remove existing cursor
+                element.find('.blinking-cursor').remove();
+                
+                // Add new cursor if task is running
+                if (isRunning) {
+                    element.append('<span class="blinking-cursor"></span>');
+                }
+            }
+            
+            // Function to load task details
+            function loadTaskDetails() {
+                $.ajax({
+                    url: `/api/task/${taskId}`,
+                    method: 'GET',
+                    success: function(data) {
+                        if (data.error) {
+                            terminalOutput.html(`<div class="error-output">Error: ${data.error}</div>`);
+                            rawOutput.text(`Error: ${data.error}`);
+                            loadingOutput.hide();
+                            return;
+                        }
+                        
+                        // Update task info
+                        $('#taskGoal').text(data.goal || 'N/A');
+                        $('#taskStep').text(data.step || '0');
+                        $('#currentStep').text(data.step || '0');
+                        
+                        // Update task status badge
+                        const status = data.status || 'unknown';
+                        taskStatusBadge.text(status);
+                        taskStatusBadge.removeClass().addClass(`badge status-badge ${getStatusBadgeClass(status)}`);
+                        
+                        // Check if task is completed
+                        taskCompleted = status.includes('completed') || status.includes('failed');
+                        
+                        // Update cancel button
+                        cancelBtn.prop('disabled', taskCompleted);
+                        
+                        // Update created time
+                        if (data.created) {
+                            $('#taskCreated').text(formatDate(data.created));
+                        }
+                        
+                        // Update duration
+                        if (data.duration) {
+                            $('#taskDuration').text(formatDuration(data.duration));
+                        } else if (data.start_time) {
+                            const duration = Math.floor(Date.now() / 1000 - data.start_time);
+                            $('#taskDuration').text(formatDuration(duration) + ' (running)');
+                        }
+                        
+                        // Show step spinner if task is running
+                        if (!taskCompleted && status.includes('running')) {
+                            stepSpinner.show();
+                        } else {
+                            stepSpinner.hide();
+                        }
+                        
+                        // Update terminal output
+                        updateTerminalOutput(data.output || '');
+                        
+                        // Add blinking cursor if task is still running
+                        addBlinkingCursor(terminalOutput, !taskCompleted);
+                        
+                        // Update environment details
+                        updateEnvironmentDetails(data.environment);
+                    },
+                    error: function(xhr, status, error) {
+                        terminalOutput.html(`<div class="error-output">Error loading task: ${error}</div>`);
+                        rawOutput.text(`Error loading task: ${error}`);
+                        loadingOutput.hide();
+                    }
                 });
-                logItem.classList.add('active', 'bg-light');
+            }
+            
+            // Function to update terminal output
+            function updateTerminalOutput(output) {
+                if (!output) {
+                    return;
+                }
                 
-                // Get log path and fetch content
-                const logPath = logItem.dataset.logPath;
-                if (!logPath) return;
+                // Store raw output
+                rawOutputText = output;
+                rawOutput.text(output);
                 
-                fetch(`/logs/${logPath.split('/').slice(-2).join('/')}`)
-                    .then(response => response.text())
-                    .then(content => {
-                        logContent.innerHTML = content;
-                        currentLogPath.textContent = logPath.split('/').pop();
+                // Format and display terminal output
+                const highlightedOutput = highlightOutput(output);
+                terminalOutput.html(highlightedOutput);
+                loadingOutput.hide();
+                
+                // Scroll to bottom if auto-scroll is enabled
+                if (autoScroll) {
+                    const terminal = $('.terminal');
+                    terminal.scrollTop(terminal[0].scrollHeight);
+                }
+            }
+            
+            // Function to update environment details
+            function updateEnvironmentDetails(env) {
+                if (!env) {
+                    environmentDetails.html('<div class="text-muted">No environment information available</div>');
+                    return;
+                }
+                
+                let html = '<ul class="list-group list-group-flush">';
+                
+                // Process user and root status
+                html += `<li class="list-group-item d-flex justify-content-between align-items-center">
+                    <span>User</span>
+                    <span>${env.user || 'unknown'} ${env.is_root ? '(root)' : ''}</span>
+                </li>`;
+                
+                // OS info
+                if (env.os_info) {
+                    html += `<li class="list-group-item d-flex justify-content-between align-items-center">
+                        <span>OS</span>
+                        <span>${env.os_info}</span>
+                    </li>`;
+                }
+                
+                // Kernel
+                if (env.kernel) {
+                    html += `<li class="list-group-item d-flex justify-content-between align-items-center">
+                        <span>Kernel</span>
+                        <span>${env.kernel}</span>
+                    </li>`;
+                }
+                
+                // Working directory
+                if (env.working_dir) {
+                    html += `<li class="list-group-item d-flex justify-content-between align-items-center">
+                        <span>Working Directory</span>
+                        <span>${env.working_dir}</span>
+                    </li>`;
+                }
+                
+                // Docker status
+                if (env.docker_status) {
+                    html += `<li class="list-group-item d-flex justify-content-between align-items-center">
+                        <span>Docker</span>
+                        <span>${env.docker_status}${env.docker_running ? ` (${env.docker_running})` : ''}</span>
+                    </li>`;
+                }
+                
+                // Available commands
+                if (env.available_commands) {
+                    html += `<li class="list-group-item">
+                        <div>Available Commands</div>
+                        <div class="mt-1">`;
+                    
+                    if (typeof env.available_commands === 'string') {
+                        // Handle string format
+                        const commands = env.available_commands.split(/\s+/).filter(Boolean);
+                        commands.forEach(cmd => {
+                            html += `<span class="badge bg-secondary me-1">${cmd}</span>`;
+                        });
+                    } else if (typeof env.available_commands === 'object') {
+                        // Handle object format
+                        for (const [cmd, status] of Object.entries(env.available_commands)) {
+                            const isAvailable = status === 'available';
+                            html += `<span class="badge ${isAvailable ? 'bg-success' : 'bg-danger'} me-1">${cmd}</span>`;
+                        }
+                    }
+                    
+                    html += `</div>
+                    </li>`;
+                }
+                
+                // Memory info
+                if (env.memory) {
+                    html += `<li class="list-group-item d-flex justify-content-between align-items-center">
+                        <span>Memory</span>
+                        <span>${env.memory}</span>
+                    </li>`;
+                }
+                
+                // Free disk space
+                if (env.free_disk_space) {
+                    html += `<li class="list-group-item d-flex justify-content-between align-items-center">
+                        <span>Free Disk Space</span>
+                        <span>${env.free_disk_space}</span>
+                    </li>`;
+                }
+                
+                html += '</ul>';
+                environmentDetails.html(html);
+            }
+            
+            // Initialize WebSocket connection
+            function initWebSocket() {
+                ws = new WebSocket(`ws://${window.location.host}/ws`);
+                
+                ws.onopen = function() {
+                    console.log('WebSocket connected');
+                };
+                
+                ws.onmessage = function(event) {
+                    const data = JSON.parse(event.data);
+                    
+                    if (data.type === 'task_update' && data.id === taskId) {
+                        // Update terminal output
+                        updateTerminalOutput(data.output);
+                        
+                        // Update task status and step
+                        taskStatusBadge.text(data.status);
+                        taskStatusBadge.removeClass().addClass(`badge status-badge ${getStatusBadgeClass(data.status)}`);
+                        
+                        if (data.step) {
+                            $('#taskStep').text(data.step);
+                            $('#currentStep').text(data.step);
+                            stepSpinner.show();
+                        }
+                    } else if (data.type === 'task_complete' && data.id === taskId) {
+                        // Update terminal output
+                        updateTerminalOutput(data.output);
+                        
+                        // Update task status
+                        taskStatusBadge.text(data.status);
+                        taskStatusBadge.removeClass().addClass(`badge status-badge ${getStatusBadgeClass(data.status)}`);
+                        
+                        // Update task completion
+                        taskCompleted = true;
+                        cancelBtn.prop('disabled', true);
+                        stepSpinner.hide();
+                        
+                        // Remove blinking cursor
+                        addBlinkingCursor(terminalOutput, false);
+                        
+                        // Reload task details to get final information
+                        loadTaskDetails();
+                    }
+                };
+                
+                ws.onclose = function() {
+                    console.log('WebSocket disconnected');
+                    // Try to reconnect after a delay if the task is not completed
+                    if (!taskCompleted) {
+                        setTimeout(initWebSocket, 5000);
+                    }
+                };
+                
+                ws.onerror = function(error) {
+                    console.error('WebSocket error:', error);
+                };
+            }
+            
+            // Copy terminal output
+            copyBtn.on('click', function() {
+                const text = terminalOutput.text();
+                navigator.clipboard.writeText(text)
+                    .then(() => {
+                        const originalText = copyBtn.html();
+                        copyBtn.html('<i class="bi bi-check"></i> Copied!');
+                        setTimeout(() => {
+                            copyBtn.html(originalText);
+                        }, 2000);
                     })
-                    .catch(error => {
-                        logContent.innerHTML = `<div class="alert alert-danger">Error loading log: ${error}</div>`;
+                    .catch(err => {
+                        alert('Failed to copy: ' + err);
                     });
             });
             
-            // Refresh logs
-            refreshLogsBtn.addEventListener('click', function() {
-                location.reload();
+            // Copy raw output
+            rawCopyBtn.on('click', function() {
+                navigator.clipboard.writeText(rawOutputText)
+                    .then(() => {
+                        const originalText = rawCopyBtn.html();
+                        rawCopyBtn.html('<i class="bi bi-check"></i> Copied!');
+                        setTimeout(() => {
+                            rawCopyBtn.html(originalText);
+                        }, 2000);
+                    })
+                    .catch(err => {
+                        alert('Failed to copy: ' + err);
+                    });
             });
+            
+            // Download terminal output
+            downloadBtn.on('click', function() {
+                const text = terminalOutput.text();
+                const blob = new Blob([text], { type: 'text/plain' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `task_${taskId}_output.txt`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            });
+            
+            // Download raw output
+            rawDownloadBtn.on('click', function() {
+                const blob = new Blob([rawOutputText], { type: 'text/plain' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `task_${taskId}_raw_output.txt`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            });
+            
+            // Clear terminal
+            clearBtn.on('click', function() {
+                if (confirm('Are you sure you want to clear the terminal? This will only clear the view, not the actual task output.')) {
+                    terminalOutput.empty();
+                }
+            });
+            
+            // Cancel task
+            cancelBtn.on('click', function() {
+                if (confirm('Are you sure you want to cancel this task?')) {
+                    $.ajax({
+                        url: `/api/task/${taskId}/cancel`,
+                        method: 'POST',
+                        success: function(data) {
+                            if (data.success) {
+                                alert('Task cancelled successfully');
+                                loadTaskDetails();
+                            } else {
+                                alert(`Failed to cancel task: ${data.error}`);
+                            }
+                        },
+                        error: function(xhr, status, error) {
+                            alert(`Error: ${error}`);
+                        }
+                    });
+                }
+            });
+            
+            // Refresh button
+            refreshBtn.on('click', function() {
+                loadTaskDetails();
+            });
+            
+            // Auto-scroll toggle
+            autoScrollToggle.on('change', function() {
+                autoScroll = $(this).is(':checked');
+                
+                if (autoScroll) {
+                    const terminal = $('.terminal');
+                    terminal.scrollTop(terminal[0].scrollHeight);
+                }
+            });
+            
+            // Scroll to bottom button
+            scrollToBottomBtn.on('click', function() {
+                const terminal = $('.terminal');
+                terminal.scrollTop(terminal[0].scrollHeight);
+            });
+            
+            // Initialize
+            loadTaskDetails();
+            initWebSocket();
+            
+            // Set up auto-refresh
+            const refreshInterval = setInterval(function() {
+                if (!taskCompleted) {
+                    loadTaskDetails();
+                } else {
+                    clearInterval(refreshInterval);
+                }
+            }, 10000);  // Refresh every 10 seconds if task is not completed
         });
     </script>
 </body>

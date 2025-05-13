@@ -4,78 +4,622 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Infinite AI Agent</title>
-    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="/static/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f8f9fa;
+        }
+        
+        .navbar {
+            background-color: #343a40 !important;
+            box-shadow: 0 2px 4px rgba(0,0,0,.1);
+        }
+        
+        .card {
+            border: none;
+            box-shadow: 0 0.125rem 0.25rem rgba(0,0,0,.075);
+            margin-bottom: 1.5rem;
+            border-radius: 0.5rem;
+        }
+        
+        .card-header {
+            background-color: #fff;
+            border-bottom: 1px solid rgba(0,0,0,.05);
+            border-radius: 0.5rem 0.5rem 0 0 !important;
+            padding: 1rem 1.25rem;
+        }
+        
+        .task-list {
+            max-height: 600px;
+            overflow-y: auto;
+        }
+        
+        .task-item {
+            border-left: 3px solid transparent;
+            transition: all 0.2s ease;
+        }
+        
+        .task-item:hover {
+            background-color: rgba(0,0,0,.01);
+        }
+        
+        .task-item-running { border-left-color: #007bff; }
+        .task-item-completed { border-left-color: #28a745; }
+        .task-item-failed { border-left-color: #dc3545; }
+        .task-item-pending { border-left-color: #6c757d; }
+        
+        .status-badge {
+            font-size: 0.8em;
+            padding: 0.3em 0.6em;
+            border-radius: 50rem;
+        }
+        
+        .status-running { background-color: #007bff; color: white; }
+        .status-completed { background-color: #28a745; color: white; }
+        .status-failed { background-color: #dc3545; color: white; }
+        .status-pending { background-color: #6c757d; color: white; }
+        
+        .system-status {
+            display: flex;
+            align-items: center;
+            margin-bottom: 0.5rem;
+        }
+        
+        .status-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 0.5rem;
+        }
+        
+        .status-online { background-color: #28a745; }
+        .status-offline { background-color: #dc3545; }
+        
+        .model-badge {
+            background-color: #6610f2;
+            color: white;
+            font-size: 0.75em;
+            margin-right: 0.25rem;
+        }
+        
+        .goal-form {
+            background-color: #fff;
+            border-radius: 0.5rem;
+            padding: 1.5rem;
+            box-shadow: 0 0.125rem 0.25rem rgba(0,0,0,.075);
+        }
+        
+        .stats-card {
+            text-align: center;
+            padding: 1rem;
+        }
+        
+        .stats-icon {
+            font-size: 2rem;
+            margin-bottom: 0.5rem;
+        }
+        
+        .stats-number {
+            font-size: 1.5rem;
+            font-weight: bold;
+        }
+        
+        .stats-label {
+            font-size: 0.9rem;
+            color: #6c757d;
+        }
+        
+        #activeTasks .list-group-item {
+            border-left-width: 3px;
+            transition: all 0.2s;
+        }
+        
+        #activeTasks .list-group-item:hover {
+            background-color: #f8f9fa;
+        }
+        
+        .task-time {
+            font-size: 0.8em;
+            color: #6c757d;
+        }
+        
+        .task-controls {
+            display: flex;
+            gap: 0.5rem;
+        }
+        
+        .btn-icon {
+            padding: 0.25rem 0.5rem;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+    </style>
 </head>
 <body>
-    <div class="container">
-        <header>
-            <div class="logo">
-                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M12 8V4m0 8v-4m0 8v-4m0 8v-4M4 6h16M4 10h16M4 14h16M4 18h16"></path>
-                </svg>
-                <span>Infinite AI Agent</span>
-            </div>
-            <nav>
-                <ul>
-                    <li><a href="/" class="active">Home</a></li>
-                    <li><a href="/history">History</a></li>
-                    <li><a href="/logs">Logs</a></li>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="/">
+                <i class="bi bi-robot"></i> Infinite AI Agent
+            </a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav">
+                    <li class="nav-item">
+                        <a class="nav-link active" href="/"><i class="bi bi-house-fill"></i> Home</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/logs"><i class="bi bi-journal-text"></i> System Logs</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/history"><i class="bi bi-clock-history"></i> Task History</a>
+                    </li>
                 </ul>
-            </nav>
-        </header>
-        
-        <div class="card">
-            <div class="card-header">
-                <h2 class="card-title">System Status</h2>
-                <div>
-                    WebSocket: <span id="ws-status" class="status-offline">Disconnected</span>
-                </div>
-            </div>
-            <div class="status-dashboard" id="system-status">
-                <div class="status-card">
-                    <h3>Ollama Service</h3>
-                    <div id="ollama-status" class="status-value">Checking...</div>
-                </div>
-                <div class="status-card">
-                    <h3>Current Model</h3>
-                    <div id="current-model" class="status-value">-</div>
-                </div>
-                <div class="status-card">
-                    <h3>Active Tasks</h3>
-                    <div id="active-tasks-count" class="status-value">0</div>
-                </div>
-                <div class="status-card">
-                    <h3>Available Models</h3>
-                    <div id="available-models" class="status-value">-</div>
-                </div>
             </div>
         </div>
-        
-        <div class="card">
-            <div class="card-header">
-                <h2 class="card-title">Submit New Goal</h2>
-            </div>
-            <form action="/submit" method="post">
-                <div class="form-group">
-                    <label for="goal">What would you like the AI to do?</label>
-                    <textarea id="goal" name="goal" placeholder="Enter your goal, task or question here..." required></textarea>
+    </nav>
+
+    <div class="container-fluid py-4">
+        <div class="row">
+            <!-- Left Column -->
+            <div class="col-lg-8">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0"><i class="bi bi-list-check"></i> Active Tasks</h5>
+                        <button id="refreshTasks" class="btn btn-sm btn-outline-secondary">
+                            <i class="bi bi-arrow-clockwise"></i> Refresh
+                        </button>
+                    </div>
+                    <div class="card-body p-0">
+                        <div id="activeTasks" class="list-group list-group-flush task-list">
+                            <!-- Tasks will be populated here -->
+                            <div class="text-center py-5" id="noTasksMessage">
+                                <i class="bi bi-inbox" style="font-size: 3rem; color: #dee2e6;"></i>
+                                <p class="mt-3 text-muted">No active tasks</p>
+                            </div>
+                        </div>
+                    </div>
                 </div>
-                <div class="form-group">
-                    <button type="submit" class="button">Submit Goal</button>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0"><i class="bi bi-bar-chart"></i> Task Statistics</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-3">
+                                <div class="stats-card">
+                                    <div class="stats-icon text-primary">
+                                        <i class="bi bi-lightning-charge"></i>
+                                    </div>
+                                    <div class="stats-number" id="activeTasksCount">0</div>
+                                    <div class="stats-label">Active Tasks</div>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="stats-card">
+                                    <div class="stats-icon text-success">
+                                        <i class="bi bi-check-circle"></i>
+                                    </div>
+                                    <div class="stats-number" id="completedTasksCount">0</div>
+                                    <div class="stats-label">Completed</div>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="stats-card">
+                                    <div class="stats-icon text-danger">
+                                        <i class="bi bi-x-circle"></i>
+                                    </div>
+                                    <div class="stats-number" id="failedTasksCount">0</div>
+                                    <div class="stats-label">Failed</div>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="stats-card">
+                                    <div class="stats-icon text-info">
+                                        <i class="bi bi-clock-history"></i>
+                                    </div>
+                                    <div class="stats-number" id="totalTasksCount">0</div>
+                                    <div class="stats-label">Total Tasks</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
-            </form>
-        </div>
-        
-        <div class="card">
-            <div class="card-header">
-                <h2 class="card-title">Active Tasks</h2>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0"><i class="bi bi-clock-history"></i> Recent Tasks</h5>
+                    </div>
+                    <div class="card-body p-0">
+                        <div id="recentTasks" class="list-group list-group-flush">
+                            <!-- Recent tasks will be populated here -->
+                            <div class="text-center py-5" id="noRecentTasksMessage">
+                                <i class="bi bi-clock" style="font-size: 3rem; color: #dee2e6;"></i>
+                                <p class="mt-3 text-muted">No recent tasks</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
-            <div id="active-tasks" class="task-list">
-                <div class="loader"></div>
+
+            <!-- Right Column -->
+            <div class="col-lg-4">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0"><i class="bi bi-send"></i> Start New Task</h5>
+                    </div>
+                    <div class="card-body">
+                        <form action="/submit" method="post" class="goal-form">
+                            <div class="mb-3">
+                                <label for="goal" class="form-label">Enter your goal:</label>
+                                <textarea class="form-control" id="goal" name="goal" rows="3" placeholder="e.g., Install Docker, Create a Python script to analyze logs, etc."></textarea>
+                            </div>
+                            <button type="submit" class="btn btn-primary w-100">
+                                <i class="bi bi-play-fill"></i> Execute Task
+                            </button>
+                        </form>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0"><i class="bi bi-info-circle"></i> System Status</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="system-status">
+                            <span class="status-indicator status-online" id="agentStatus"></span>
+                            <span>Agent: </span>
+                            <span class="ms-1" id="agentStatusText">Online</span>
+                        </div>
+                        <div class="system-status">
+                            <span class="status-indicator" id="ollamaStatus"></span>
+                            <span>Ollama: </span>
+                            <span class="ms-1" id="ollamaStatusText">Checking...</span>
+                        </div>
+                        <hr>
+                        <div class="mb-2">
+                            <strong>Current Model:</strong> <span id="currentModel">Loading...</span>
+                        </div>
+                        <div>
+                            <strong>Available Models:</strong>
+                            <div id="availableModels" class="mt-1">
+                                <div class="spinner-border spinner-border-sm text-primary" role="status">
+                                    <span class="visually-hidden">Loading...</span>
+                                </div>
+                                <span class="ms-1">Loading models...</span>
+                            </div>
+                        </div>
+                        <hr>
+                        <div class="d-flex justify-content-between">
+                            <span><strong>API Port:</strong> <span id="apiPort">8000</span></span>
+                            <span><strong>UI Port:</strong> <span id="uiPort">8080</span></span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0"><i class="bi bi-life-preserver"></i> Quick Links</h5>
+                    </div>
+                    <div class="list-group list-group-flush">
+                        <a href="/logs" class="list-group-item list-group-item-action d-flex align-items-center">
+                            <i class="bi bi-journal-text me-2"></i> System Logs
+                        </a>
+                        <a href="/history" class="list-group-item list-group-item-action d-flex align-items-center">
+                            <i class="bi bi-clock-history me-2"></i> Task History
+                        </a>
+                        <a href="https://docs.anthropic.com/claude/docs" target="_blank" class="list-group-item list-group-item-action d-flex align-items-center">
+                            <i class="bi bi-book me-2"></i> Claude Documentation
+                            <i class="bi bi-box-arrow-up-right ms-auto"></i>
+                        </a>
+                        <a href="https://github.com/ollama/ollama" target="_blank" class="list-group-item list-group-item-action d-flex align-items-center">
+                            <i class="bi bi-github me-2"></i> Ollama GitHub
+                            <i class="bi bi-box-arrow-up-right ms-auto"></i>
+                        </a>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
-    
-    <script src="/static/app.js"></script>
+
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="/static/js/bootstrap.bundle.min.js"></script>
+    <script>
+        $(document).ready(function() {
+            // Function to format date
+            function formatDate(dateString) {
+                const date = new Date(dateString);
+                return date.toLocaleString();
+            }
+            
+            // Function to format duration
+            function formatDuration(seconds) {
+                if (!seconds) return 'N/A';
+                
+                const minutes = Math.floor(seconds / 60);
+                const remainingSeconds = seconds % 60;
+                
+                if (minutes === 0) {
+                    return `${remainingSeconds}s`;
+                } else {
+                    return `${minutes}m ${remainingSeconds}s`;
+                }
+            }
+            
+            // Get status badge class
+            function getStatusBadgeClass(status) {
+                if (status.includes('running') || status.includes('starting')) {
+                    return 'status-running';
+                } else if (status.includes('completed')) {
+                    return 'status-completed';
+                } else if (status.includes('failed') || status.includes('error')) {
+                    return 'status-failed';
+                } else {
+                    return 'status-pending';
+                }
+            }
+            
+            // Get task item class
+            function getTaskItemClass(status) {
+                if (status.includes('running') || status.includes('starting')) {
+                    return 'task-item-running';
+                } else if (status.includes('completed')) {
+                    return 'task-item-completed';
+                } else if (status.includes('failed') || status.includes('error')) {
+                    return 'task-item-failed';
+                } else {
+                    return 'task-item-pending';
+                }
+            }
+            
+            // Function to load active tasks
+            function loadActiveTasks() {
+                $.ajax({
+                    url: '/api/tasks',
+                    method: 'GET',
+                    success: function(data) {
+                        const tasksContainer = $('#activeTasks');
+                        const noTasksMessage = $('#noTasksMessage');
+                        
+                        // Clear previous tasks
+                        tasksContainer.find('.task-item').remove();
+                        
+                        // Update active tasks count
+                        $('#activeTasksCount').text(Object.keys(data).length);
+                        
+                        if (Object.keys(data).length === 0) {
+                            noTasksMessage.show();
+                        } else {
+                            noTasksMessage.hide();
+                            
+                            // Sort tasks by start time (newest first)
+                            const sortedTasks = Object.values(data).sort((a, b) => {
+                                return new Date(b.start_time || 0) - new Date(a.start_time || 0);
+                            });
+                            
+                            // Add tasks to the list
+                            sortedTasks.forEach(task => {
+                                const taskId = task.id || task.task_id;
+                                const goal = task.goal;
+                                const status = task.status;
+                                const step = task.step || 0;
+                                const startTime = task.start_time ? new Date(task.start_time * 1000) : new Date();
+                                
+                                const taskHtml = `
+                                    <div class="list-group-item task-item ${getTaskItemClass(status)}">
+                                        <div class="d-flex justify-content-between align-items-start">
+                                            <div>
+                                                <h6 class="mb-1">
+                                                    <a href="/task/${taskId}" class="text-decoration-none">
+                                                        ${goal}
+                                                    </a>
+                                                </h6>
+                                                <div class="d-flex align-items-center">
+                                                    <span class="badge ${getStatusBadgeClass(status)} status-badge me-2">${status}</span>
+                                                    <small class="text-muted">ID: ${taskId} | Step: ${step}</small>
+                                                </div>
+                                            </div>
+                                            <div class="task-controls">
+                                                <a href="/task/${taskId}" class="btn btn-sm btn-outline-primary btn-icon" title="View Task">
+                                                    <i class="bi bi-eye"></i>
+                                                </a>
+                                                <a href="/task_logs/${taskId}" class="btn btn-sm btn-outline-secondary btn-icon" title="View Logs">
+                                                    <i class="bi bi-file-text"></i>
+                                                </a>
+                                                <button data-task-id="${taskId}" class="btn btn-sm btn-outline-danger btn-icon cancel-task-btn" title="Cancel Task" ${status.includes('completed') || status.includes('failed') ? 'disabled' : ''}>
+                                                    <i class="bi bi-x-circle"></i>
+                                                </button>
+                                            </div>
+                                        </div>
+                                        <div class="task-time mt-1">
+                                            <small class="text-muted">Started: ${startTime.toLocaleString()}</small>
+                                        </div>
+                                    </div>
+                                `;
+                                
+                                tasksContainer.append(taskHtml);
+                            });
+                        }
+                    },
+                    error: function(xhr, status, error) {
+                        console.error('Error loading active tasks:', error);
+                    }
+                });
+            }
+            
+            // Function to load recent tasks
+            function loadRecentTasks() {
+                $.ajax({
+                    url: '/api/history?limit=5',
+                    method: 'GET',
+                    success: function(data) {
+                        const tasksContainer = $('#recentTasks');
+                        const noRecentTasksMessage = $('#noRecentTasksMessage');
+                        
+                        // Clear previous tasks
+                        tasksContainer.find('.task-item').remove();
+                        
+                        if (data.length === 0) {
+                            noRecentTasksMessage.show();
+                        } else {
+                            noRecentTasksMessage.hide();
+                            
+                            // Update task counts
+                            let completedCount = 0;
+                            let failedCount = 0;
+                            
+                            // Add tasks to the list
+                            data.forEach(task => {
+                                const taskId = task.id;
+                                const goal = task.goal;
+                                const status = task.status;
+                                const timestamp = formatDate(task.timestamp);
+                                const duration = formatDuration(task.duration);
+                                
+                                // Update counts
+                                if (status === 'completed') {
+                                    completedCount++;
+                                } else if (status === 'failed') {
+                                    failedCount++;
+                                }
+                                
+                                const taskHtml = `
+                                    <div class="list-group-item task-item ${getTaskItemClass(status)}">
+                                        <div class="d-flex justify-content-between align-items-start">
+                                            <div>
+                                                <h6 class="mb-1">
+                                                    <a href="/task/${taskId}" class="text-decoration-none">
+                                                        ${goal}
+                                                    </a>
+                                                </h6>
+                                                <div class="d-flex align-items-center">
+                                                    <span class="badge ${getStatusBadgeClass(status)} status-badge me-2">${status}</span>
+                                                    <small class="text-muted">ID: ${taskId} | Duration: ${duration}</small>
+                                                </div>
+                                            </div>
+                                            <div class="task-controls">
+                                                <a href="/task/${taskId}" class="btn btn-sm btn-outline-primary btn-icon" title="View Task">
+                                                    <i class="bi bi-eye"></i>
+                                                </a>
+                                                <a href="/task_logs/${taskId}" class="btn btn-sm btn-outline-secondary btn-icon" title="View Logs">
+                                                    <i class="bi bi-file-text"></i>
+                                                </a>
+                                            </div>
+                                        </div>
+                                        <div class="task-time mt-1">
+                                            <small class="text-muted">Completed: ${timestamp}</small>
+                                        </div>
+                                    </div>
+                                `;
+                                
+                                tasksContainer.append(taskHtml);
+                            });
+                            
+                            // Update statistics
+                            $('#completedTasksCount').text(completedCount);
+                            $('#failedTasksCount').text(failedCount);
+                            $('#totalTasksCount').text(data.length);
+                        }
+                    },
+                    error: function(xhr, status, error) {
+                        console.error('Error loading recent tasks:', error);
+                    }
+                });
+            }
+            
+            // Function to load system status
+            function loadSystemStatus() {
+                $.ajax({
+                    url: '/api/status',
+                    method: 'GET',
+                    success: function(data) {
+                        // Update Ollama status
+                        if (data.ollama === 'running') {
+                            $('#ollamaStatus').removeClass('status-offline').addClass('status-online');
+                            $('#ollamaStatusText').text('Online');
+                        } else {
+                            $('#ollamaStatus').removeClass('status-online').addClass('status-offline');
+                            $('#ollamaStatusText').text('Offline');
+                        }
+                        
+                        // Update current model
+                        $('#currentModel').text(data.current_model);
+                        
+                        // Update available models
+                        if (data.models && data.models.length > 0) {
+                            const modelsContainer = $('#availableModels');
+                            modelsContainer.empty();
+                            
+                            data.models.forEach(model => {
+                                modelsContainer.append(`
+                                    <span class="badge model-badge">${model}</span>
+                                `);
+                            });
+                        } else {
+                            $('#availableModels').html('<span class="text-muted">No models available</span>');
+                        }
+                        
+                        // Update ports
+                        $('#apiPort').text(data.api_port || 8000);
+                        $('#uiPort').text(data.ui_port || 8080);
+                    },
+                    error: function(xhr, status, error) {
+                        console.error('Error loading system status:', error);
+                        
+                        // Update status indicators to offline
+                        $('#ollamaStatus').removeClass('status-online').addClass('status-offline');
+                        $('#ollamaStatusText').text('Error connecting');
+                    }
+                });
+            }
+            
+            // Cancel task
+            $(document).on('click', '.cancel-task-btn', function() {
+                const taskId = $(this).data('task-id');
+                
+                if (confirm(`Are you sure you want to cancel task ${taskId}?`)) {
+                    $.ajax({
+                        url: `/api/task/${taskId}/cancel`,
+                        method: 'POST',
+                        success: function(data) {
+                            if (data.success) {
+                                alert('Task cancelled successfully');
+                                loadActiveTasks();
+                            } else {
+                                alert(`Failed to cancel task: ${data.error}`);
+                            }
+                        },
+                        error: function(xhr, status, error) {
+                            alert(`Error: ${error}`);
+                        }
+                    });
+                }
+            });
+            
+            // Refresh button
+            $('#refreshTasks').click(function() {
+                loadActiveTasks();
+                loadRecentTasks();
+                loadSystemStatus();
+            });
+            
+            // Load data on page load
+            loadActiveTasks();
+            loadRecentTasks();
+            loadSystemStatus();
+            
+            // Set up auto-refresh
+            setInterval(function() {
+                loadActiveTasks();
+                loadSystemStatus();
+            }, 10000);  // Refresh every 10 seconds
+        });
+    </script>
 </body>
 </html>

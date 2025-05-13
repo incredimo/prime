@@ -516,62 +516,157 @@ PY
 # ------------------------------------------------------------
 cat > agent.py <<'PY'
 #!/usr/bin/env python3
-import os, sys, subprocess, uuid, sqlite3, pathlib, json, time, datetime, threading, textwrap, re, requests, asyncio
+"""
+Infinite AI Agent - An autonomous, root-capable agent running on Linux systems.
+This agent can execute tasks, manage context, and interact with LLMs to accomplish goals.
+"""
+
+import os
+import sys
+import subprocess
+import sqlite3
+import pathlib
+import json
+import time
+import datetime
+import threading
+import textwrap
+import re
+import requests
+import asyncio
+import uuid
+import shlex
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Form
-from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
 from pydantic import BaseModel
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple, Union
 from infra.logger import log, get_recent_logs, add_log_listener, remove_log_listener
 
-# --------------------------- CONFIG ---------------------------
+# =====================================================================
+# CONFIGURATION
+# =====================================================================
 
-WORKDIR       = pathlib.Path(__file__).resolve().parent
-SKILL_DIR     = WORKDIR / "skills"
-DB_PATH       = WORKDIR / "skills.db"
-OLLAMA_URL    = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
-MODEL         = os.getenv("OLLAMA_MODEL", "gemma3")
-API_PORT      = int(os.getenv("INFINITE_AI_PORT", 8000))
-UI_PORT       = int(os.getenv("INFINITE_AI_UI_PORT", 8080))
-LOGS_DIR      = WORKDIR / "logs"
-MAX_CONTEXT   = 4000  # approximate token limit for truncation
+WORKDIR = pathlib.Path(__file__).resolve().parent
+SKILL_DIR = WORKDIR / "skills"
+DB_PATH = WORKDIR / "skills.db"
+LOGS_DIR = WORKDIR / "logs"
+TASK_LOGS_DIR = LOGS_DIR / "tasks"
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
+MODEL = os.getenv("OLLAMA_MODEL", "gemma3")
+API_PORT = int(os.getenv("INFINITE_AI_PORT", 8000))
+UI_PORT = int(os.getenv("INFINITE_AI_UI_PORT", 8080))
+MAX_CONTEXT = 4000  # approximate token limit for truncation
+MAX_LOG_SIZE = 100000  # maximum number of characters to keep in a log file
+LOG_TIMESTAMP_FORMAT = "%Y%m%d%H%M%S"  # Format for log filenames
 
-# Ensure directories exist
+# Ensure required directories exist
 SKILL_DIR.mkdir(exist_ok=True)
 LOGS_DIR.mkdir(exist_ok=True)
+TASK_LOGS_DIR.mkdir(exist_ok=True)
 
-# --------------------------- DB & Memory ---------------------------
+# =====================================================================
+# DATABASE MANAGEMENT
+# =====================================================================
 
 _thread_local = threading.local()
 
 def get_connection():
+    """Get a thread-local database connection"""
     if not hasattr(_thread_local, "conn"):
-        _thread_local.conn = sqlite3.connect(DB_PATH)
+        _thread_local.conn = sqlite3.connect(str(DB_PATH))
+        # Enable foreign keys
+        _thread_local.conn.execute("PRAGMA foreign_keys = ON")
     return _thread_local.conn
 
 def init_db():
+    """Initialize the database schema"""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("CREATE TABLE IF NOT EXISTS convo (id INTEGER PRIMARY KEY, ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP, role TEXT, content TEXT)")
-    cur.execute("CREATE TABLE IF NOT EXISTS history (id INTEGER PRIMARY KEY, ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP, goal TEXT, status TEXT DEFAULT 'completed', output TEXT, duration INTEGER)")
-    cur.execute("CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY, task_id TEXT, goal TEXT, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+    
+    # Main conversation table
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS convo (
+            id INTEGER PRIMARY KEY,
+            ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            role TEXT,
+            content TEXT
+        )
+    """)
+    
+    # Task history table
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS history (
+            id INTEGER PRIMARY KEY,
+            ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            goal TEXT,
+            status TEXT DEFAULT 'completed',
+            output TEXT,
+            duration INTEGER
+        )
+    """)
+    
+    # Task tracking table for sequential IDs
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS tasks (
+            id INTEGER PRIMARY KEY, 
+            task_id TEXT UNIQUE,
+            goal TEXT,
+            status TEXT DEFAULT 'pending',
+            created TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            environment TEXT
+        )
+    """)
+    
+    # Task log reference table
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS task_logs (
+            id INTEGER PRIMARY KEY,
+            task_id TEXT,
+            log_type TEXT,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            filename TEXT,
+            FOREIGN KEY (task_id) REFERENCES tasks (task_id)
+        )
+    """)
+    
     conn.commit()
 
+# Initialize database on module load
 init_db()
 
-def save_history(goal, status, output, duration):
+def remember(role, content):
+    """Store a message in the conversation history"""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("INSERT INTO history(goal,status,output,duration) VALUES(?,?,?,?)", (goal, status, output, duration))
+    cur.execute("INSERT INTO convo(role, content) VALUES(?, ?)", (role, content))
+    conn.commit()
+
+def save_history(goal, status, output, duration):
+    """Save a task execution to history"""
+    conn = get_connection()
+    cur = conn.cursor()
+    # Cap output size to prevent database bloat
+    output = output if len(output) < MAX_LOG_SIZE else output[:MAX_LOG_SIZE//2] + "\n...[truncated]...\n" + output[-MAX_LOG_SIZE//2:]
+    cur.execute("INSERT INTO history(goal, status, output, duration) VALUES(?, ?, ?, ?)", 
+               (goal, status, output, duration))
     conn.commit()
 
 def get_history(limit=50):
+    """Get recent task history"""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT id, ts, goal, status, output, duration FROM history ORDER BY ts DESC LIMIT ?", (limit,))
+    cur.execute("""
+        SELECT id, ts, goal, status, output, duration 
+        FROM history 
+        ORDER BY ts DESC 
+        LIMIT ?
+    """, (limit,))
+    
     rows = cur.fetchall()
     result = []
     for row in rows:
@@ -585,37 +680,130 @@ def get_history(limit=50):
         })
     return result
 
-def remember(role, content):
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("INSERT INTO convo(role,content) VALUES(?,?)", (role, content))
-    conn.commit()
-
-# --------------------------- Task ID Generator ---------------------------
-
 def get_next_task_id():
     """Generate sequential task IDs starting from 100000001"""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT MAX(id) FROM tasks")
-    result = cur.fetchone()[0]
     
-    # If no tasks yet, start with 100000001
-    if result is None:
+    # Check if tasks table has any entries
+    cur.execute("SELECT COUNT(*) FROM tasks")
+    count = cur.fetchone()[0]
+    
+    if count == 0:
+        # No tasks yet, start with 100000001
         return "100000001"
     
-    # Otherwise increment the last ID
-    return str(int(result) + 1)
+    # Get the highest numerical ID
+    cur.execute("SELECT MAX(CAST(task_id AS INTEGER)) FROM tasks")
+    max_id = cur.fetchone()[0]
+    
+    if max_id is None:
+        return "100000001"
+    
+    # Increment and return
+    return str(int(max_id) + 1)
 
-def register_task(task_id, goal):
+def register_task(task_id, goal, env_context=None):
     """Register a new task in the database"""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("INSERT INTO tasks(id, task_id, goal) VALUES(?,?,?)", 
-               (int(task_id), task_id, goal))
+    
+    # Convert environment context to JSON if provided
+    env_json = json.dumps(env_context) if env_context else None
+    
+    cur.execute("""
+        INSERT INTO tasks(task_id, goal, status, environment) 
+        VALUES(?, ?, 'running', ?)
+    """, (task_id, goal, env_json))
     conn.commit()
 
-# --------------------------- Message Logging ---------------------------
+def update_task_status(task_id, status, env_context=None):
+    """Update a task's status"""
+    conn = get_connection()
+    cur = conn.cursor()
+    
+    # Update environment if provided
+    if env_context:
+        env_json = json.dumps(env_context)
+        cur.execute("""
+            UPDATE tasks 
+            SET status = ?, updated = CURRENT_TIMESTAMP, environment = ? 
+            WHERE task_id = ?
+        """, (status, env_json, task_id))
+    else:
+        cur.execute("""
+            UPDATE tasks 
+            SET status = ?, updated = CURRENT_TIMESTAMP
+            WHERE task_id = ?
+        """, (status, task_id))
+    
+    conn.commit()
+
+def get_task_info(task_id):
+    """Get detailed information about a task"""
+    conn = get_connection()
+    cur = conn.cursor()
+    
+    cur.execute("""
+        SELECT task_id, goal, status, created, updated, environment
+        FROM tasks
+        WHERE task_id = ?
+    """, (task_id,))
+    
+    row = cur.fetchone()
+    if not row:
+        return None
+    
+    # Parse environment JSON if available
+    environment = json.loads(row[5]) if row[5] else None
+    
+    return {
+        "task_id": row[0],
+        "goal": row[1],
+        "status": row[2],
+        "created": row[3],
+        "updated": row[4],
+        "environment": environment
+    }
+
+def register_task_log(task_id, log_type, filename):
+    """Register a log file in the database"""
+    conn = get_connection()
+    cur = conn.cursor()
+    
+    cur.execute("""
+        INSERT INTO task_logs(task_id, log_type, filename)
+        VALUES(?, ?, ?)
+    """, (task_id, log_type, filename))
+    
+    conn.commit()
+
+def get_task_logs(task_id):
+    """Get all logs for a specific task"""
+    conn = get_connection()
+    cur = conn.cursor()
+    
+    cur.execute("""
+        SELECT log_type, timestamp, filename
+        FROM task_logs
+        WHERE task_id = ?
+        ORDER BY timestamp
+    """, (task_id,))
+    
+    logs = []
+    for row in cur.fetchall():
+        logs.append({
+            "type": row[0],
+            "timestamp": row[1],
+            "filename": row[2],
+            "path": str(TASK_LOGS_DIR / task_id / row[2])
+        })
+    
+    return logs
+
+# =====================================================================
+# LOGGING AND FILE MANAGEMENT
+# =====================================================================
 
 def save_task_log(task_id, log_type, content):
     """
@@ -626,13 +814,17 @@ def save_task_log(task_id, log_type, content):
     - system_to_llm: System prompt to LLM
     - llm_to_system: LLM response to system
     - system_shell_execution: System shell execution
+    - system_shell_output: Output from shell execution
+    - system_function_execution: Function execution by the system
+    - system_error: Error logs
+    - system_task_complete: Task completion logs
     """
     # Create task directory if it doesn't exist
-    task_dir = LOGS_DIR / task_id
-    task_dir.mkdir(exist_ok=True)
+    task_dir = TASK_LOGS_DIR / task_id
+    task_dir.mkdir(exist_ok=True, parents=True)
     
     # Create timestamp
-    timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+    timestamp = datetime.datetime.now().strftime(LOG_TIMESTAMP_FORMAT)
     
     # Create filename with requested format
     filename = f"{task_id}_{timestamp}_{log_type}.md"
@@ -646,475 +838,53 @@ def save_task_log(task_id, log_type, content):
         f.write(content)
         f.write("\n```\n")
     
+    # Register log in database
+    register_task_log(task_id, log_type, filename)
+    
     # Real-time log to terminal as well
-    log(f"[{log_type}] Task {task_id} log saved to {filename}")
+    log(f"[Task {task_id}] [{log_type}] Log saved: {filename}")
     
     return filepath
 
-def get_task_logs(task_id):
-    """Get all logs for a task in chronological order"""
-    task_dir = LOGS_DIR / task_id
-    
-    if not task_dir.exists():
-        return []
-    
-    log_files = sorted(task_dir.glob(f"{task_id}_*.md"))
-    logs = []
-    
-    for file in log_files:
-        filename = file.name
-        parts = filename.replace('.md', '').split('_')
-        
-        # Skip if filename doesn't have the expected format
-        if len(parts) < 4:
-            continue
-        
-        timestamp = parts[1]
-        log_type = '_'.join(parts[2:])
-        
-        logs.append({
-            "filename": filename,
-            "timestamp": timestamp,
-            "type": log_type,
-            "path": str(file)
-        })
-    
-    return logs
-
-# --------------------------- Environment Context ---------------------------
-
-def get_environment_context():
-    """Returns critical environment information"""
-    context = {}
-    
-    try:
-        # Get user info - critical for understanding privileges
-        context['user'] = run_sh("whoami").strip()
-        context['is_root'] = (context['user'] == 'root')
-        
-        # Get basic system info without overwhelming the LLM
-        os_info = run_sh("cat /etc/os-release 2>/dev/null | grep PRETTY_NAME || uname -a").strip()
-        context['os_info'] = os_info
-        
-        # Check common commands
-        cmd_check = run_sh("which apt apt-get yum dnf pip python docker 2>/dev/null").strip()
-        context['available_commands'] = cmd_check
-        
-        # Get working directory
-        context['working_dir'] = run_sh("pwd").strip()
-        
-        # Check if docker is installed and running
-        docker_status = run_sh("command -v docker >/dev/null 2>&1 && echo 'installed' || echo 'not installed'").strip()
-        context['docker_status'] = docker_status
-        
-        if docker_status == 'installed':
-            docker_running = run_sh("systemctl is-active docker 2>/dev/null || echo 'unknown'").strip()
-            context['docker_running'] = docker_running
-        
-    except Exception as e:
-        log(f"Error getting environment context: {e}")
-        context['error'] = str(e)
-    
-    return context
-
-# --------------------------- Function Calling ---------------------------
-
-def extract_functions(txt):
-    """Extract function calls from LLM output"""
-    pattern = r"#CALL\s+(\w+)\s*\((.*?)\)"
-    matches = re.findall(pattern, txt, re.DOTALL)
-    
-    # Return list of (function_name, args) tuples
-    return [(name, args.strip()) for name, args in matches]
-
-def execute_functions(functions, task_id):
-    """Execute functions extracted from LLM output"""
-    results = []
-    
-    for func_name, args in functions:
-        log(f"Executing function {func_name}({args}) for task {task_id}")
-        
-        if func_name == "read_file":
-            # Simple file reading with limits
-            path = args.strip('"\'')
-            try:
-                content = read_file(path)
-                # Truncate if too long
-                if len(content) > 4000:  # Reasonable limit to avoid token explosion
-                    content = content[:2000] + "\n...[content truncated]...\n" + content[-2000:]
-                results.append(f"#FILE_CONTENT from {path}\n{content}\n#END_FILE_CONTENT")
-                
-                # Log function execution
-                save_task_log(task_id, "system_function_execution", f"read_file({path})\n\nResult truncated, showing {min(len(content), 4000)} of {len(content)} characters")
-                
-            except Exception as e:
-                error_msg = f"Error reading file {path}: {e}"
-                results.append(error_msg)
-                save_task_log(task_id, "system_function_execution", f"read_file({path})\n\nError: {e}")
-                
-        elif func_name == "check_status":
-            # Check status of a running task
-            target_task = args.strip('"\' ') or task_id
-            if target_task in active_tasks:
-                status = active_tasks[target_task]["status"]
-                results.append(f"Task {target_task} status: {status}")
-            else:
-                results.append(f"Task {target_task} not found")
-            
-            # Log function execution
-            save_task_log(task_id, "system_function_execution", f"check_status({target_task})\n\nResult: {'Task found, status: ' + active_tasks[target_task]['status'] if target_task in active_tasks else 'Task not found'}")
-                
-        elif func_name == "wait":
-            # Implement wait functionality
-            try:
-                seconds = int(args.strip())
-                max_wait = 60  # Cap at 60 seconds to prevent abuse
-                wait_time = min(seconds, max_wait)
-                results.append(f"Waiting for {wait_time} seconds...")
-                
-                # Log function execution
-                save_task_log(task_id, "system_function_execution", f"wait({seconds})\n\nWaiting for {wait_time} seconds")
-                
-                return (results, wait_time)  # Special return for wait
-            except ValueError:
-                error_msg = f"Invalid wait duration: {args}"
-                results.append(error_msg)
-                save_task_log(task_id, "system_function_execution", f"wait({args})\n\nError: Invalid wait duration")
-                
-        elif func_name == "list_directory":
-            # List directory contents
-            path = args.strip('"\' ') or "."
-            try:
-                dir_content = run_sh(f"ls -la {path}")
-                results.append(f"Directory listing for {path}:\n{dir_content}")
-                
-                # Log function execution
-                save_task_log(task_id, "system_function_execution", f"list_directory({path})\n\nResult: {len(dir_content.splitlines())} items listed")
-                
-            except Exception as e:
-                error_msg = f"Error listing directory {path}: {e}"
-                results.append(error_msg)
-                save_task_log(task_id, "system_function_execution", f"list_directory({path})\n\nError: {e}")
-    
-    return (results, 0)  # Normal return with no wait
-
-def read_file(path: str) -> str:
-    """Read file contents with error handling"""
+def read_file(path):
+    """Read file contents with robust error handling"""
     try:
         with open(path, 'r', encoding='utf-8') as f:
             return f.read()
     except UnicodeDecodeError:
-        # Try alternate encoding or binary mode
+        # Try alternate encoding if UTF-8 fails
         try:
             with open(path, 'r', encoding='latin-1') as f:
                 return f.read()
         except Exception as e:
-            return f"Error reading file {path}: {e}"
+            return f"Error reading file {path} with latin-1 encoding: {str(e)}"
+    except FileNotFoundError:
+        return f"Error: File not found: {path}"
+    except PermissionError:
+        return f"Error: Permission denied when reading {path}"
     except Exception as e:
-        return f"Error reading file {path}: {e}"
+        return f"Error reading file {path}: {str(e)}"
 
-# --------------------------- Execution Helpers ---------------------------
-
-def extract(txt: str):
-    """Extract code blocks from LLM output"""
-    # First, try to extract code from markdown-style code blocks with backticks
-    backtick_pattern = r"```(?:python|bash|sh)?\s*#(SH|PY)\s*\n(.*?)```"
-    m_backticks = re.search(backtick_pattern, txt, re.DOTALL)
+def get_task_log_content(task_id, filename):
+    """Get content of a specific log file"""
+    filepath = TASK_LOGS_DIR / task_id / filename
     
-    if m_backticks:
-        # Found code in backticks format
-        return (m_backticks.group(1), textwrap.dedent(m_backticks.group(2)))
+    if not filepath.exists():
+        return f"Error: Log file {filename} not found for task {task_id}"
     
-    # If no backtick format found, try the original format
-    m = re.search(r"#(SH|PY)\s*\n(.*)", txt, re.DOTALL)
-    return (m.group(1), textwrap.dedent(m.group(2))) if m else (None, None)
-
-def clean_code(code: str) -> str:
-    """Clean up code by removing any backticks or markdown artifacts"""
-    # Remove any trailing backticks that might have been included
-    code = re.sub(r'`\s*$', '', code)
-    # Remove any other markdown artifacts that might cause issues
-    code = re.sub(r'^`.*$', '', code, flags=re.MULTILINE)
-    return code.strip()
-
-def run_sh(code: str) -> str:
-    """Run shell command with proper error handling"""
-    # Clean the code before executing it
-    clean_code_str = clean_code(code)
-    log(f"$ bash <<\n{clean_code_str}\n>>")
-    
-    try:
-        p = subprocess.run(clean_code_str, shell=True, capture_output=True, text=True, timeout=1800)
-        out = p.stdout + p.stderr
-        log(out)
-        return out
-    except subprocess.TimeoutExpired:
-        log("Command timed out after 30 minutes")
-        return "ERROR: Command timed out after 30 minutes"
-    except Exception as e:
-        log(f"Error running shell command: {e}")
-        return f"ERROR: {str(e)}"
-
-def run_py(code: str) -> str:
-    """Run Python code with proper error handling"""
-    # Clean the code before writing it to a file
-    clean_code_str = clean_code(code)
-    tmp = SKILL_DIR / f"tmp_{uuid.uuid4().hex}.py"
-    tmp.write_text(clean_code_str)
-    
-    # Try to execute the code
-    result = run_sh(f"python {tmp}")
-    
-    # If there's a syntax error related to backticks, try to fix and retry
-    if "SyntaxError: invalid syntax" in result and "```" in result:
-        log("Detected syntax error with backticks, attempting to fix...")
-        # More aggressive cleaning
-        cleaner_code = re.sub(r'```.*?```', '', clean_code_str, flags=re.DOTALL)
-        cleaner_code = re.sub(r'`.*?`', '', cleaner_code)
-        
-        # Write the cleaned code and try again
-        tmp.write_text(cleaner_code)
-        result = run_sh(f"python {tmp}")
-    
-    return result
-
-def validate_code(code: str, kind: str) -> tuple:
-    """Validate code before execution to identify potential security issues"""
-    dangerous_patterns = [
-        r"rm\s+-rf\s+/", r"mkfs", r"dd\s+if=", r":\(\)\{\s+:\|\:\&\s+\};:", r">>/etc/passwd",
-        r"chmod\s+777", r"wget.*\|\s*bash", r"curl.*\|\s*bash",
-    ]
-    
-    for pattern in dangerous_patterns:
-        if re.search(pattern, code):
-            return (False, f"Potentially dangerous pattern detected: {pattern}")
-    
-    # Additional validation specific to Python
-    if kind == "PY" and ("os.system(" in code or "subprocess.call(" in code):
-        # Not necessarily dangerous, but worth flagging for review
-        log("Warning: Nested command execution in Python code")
-    
-    return (True, "Code passed validation")
-
-# --------------------------- Ollama Chat ---------------------------
-
-def ollama_chat(prompt: str, task_id: str, history=None):
-    """Enhanced chat function with history management, truncation, and logging"""
-    remember("user", prompt)
-    log(f"→AI PROMPT {prompt[:120]}…")
-    
-    # Log the full prompt to task logs
-    save_task_log(task_id, "system_to_llm", prompt)
-    
-    # Prepare messages
-    messages = []
-    
-    # Add history if provided
-    if history:
-        messages.extend(history)
-    
-    # Add current prompt
-    messages.append({"role": "user", "content": prompt})
-    
-    # Calculate approximate token count
-    total_tokens = sum(len(msg["content"]) / 4 for msg in messages)
-    
-    # Truncate history if needed
-    if total_tokens > MAX_CONTEXT:
-        log(f"Warning: Context too large ({int(total_tokens)} estimated tokens). Truncating...")
-        
-        # Always keep the last message (current prompt)
-        current_prompt = messages.pop()
-        
-        # Remove oldest messages until we're under the limit
-        while total_tokens > MAX_CONTEXT * 0.8 and len(messages) > 0:
-            removed = messages.pop(0)
-            total_tokens -= len(removed["content"]) / 4
-        
-        # Add truncation notice
-        messages.insert(0, {
-            "role": "system",
-            "content": "Note: Some earlier messages were truncated to stay within context limits."
-        })
-        
-        # Add back the current prompt
-        messages.append(current_prompt)
-    
-    # Make the API request
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            # Check if the prompt contains a system message
-            system_content = "You are an autonomous, root-capable agent running on a Linux system. Return exactly one code block starting with #SH or #PY, or #DONE when finished, or #SELFUPDATE followed by python code to replace agent.py."
-            user_content = prompt
-            
-            # Check if the prompt contains a system message
-            if prompt.startswith("System:"):
-                parts = prompt.split("\nGoal:", 1)
-                if len(parts) == 2:
-                    system_content = parts[0].replace("System:", "").strip()
-                    user_content = "Goal:" + parts[1].strip()
-            
-            # Construct payload
-            payload = {
-                "model": MODEL,
-                "messages": [
-                    {"role": "system", "content": system_content}
-                ],
-                "stream": False
-            }
-            
-            # Add history messages if provided
-            if history:
-                for msg in history:
-                    if msg["role"] != "system":  # Skip system messages in history
-                        payload["messages"].append(msg)
-            
-            # Add current user message
-            payload["messages"].append({"role": "user", "content": user_content})
-            
-            # Make the API request
-            response = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=600)
-            response.raise_for_status()
-            
-            # Process the response
-            try:
-                # First try to parse as a single JSON object (non-streaming response)
-                response_json = response.json()
-                txt = response_json.get("message", {}).get("content", "").strip()
-                
-                if not txt:
-                    raise ValueError("Empty response from Ollama")
-                
-                remember("assistant", txt)
-                log(f"←AI REPLY {txt[:120]}…")
-                
-                # Log the full response to task logs
-                save_task_log(task_id, "llm_to_system", txt)
-                
-                return txt
-                
-            except json.JSONDecodeError:
-                # If that fails, handle as a streaming response (multiple JSON objects)
-                log("Handling streaming response format...")
-                
-                # Ollama streaming responses are newline-delimited JSON objects
-                full_content = ""
-                response_lines = response.text.strip().split('\n')
-                
-                for line in response_lines:
-                    if not line.strip():
-                        continue
-                    
-                    try:
-                        line_json = json.loads(line)
-                        
-                        # Extract content from each message chunk
-                        if "message" in line_json and "content" in line_json["message"]:
-                            chunk_content = line_json["message"]["content"]
-                            if chunk_content:  # Only add non-empty content
-                                full_content += chunk_content
-                    
-                    except json.JSONDecodeError as json_err:
-                        log(f"Warning: Could not parse line as JSON: {line[:50]}...")
-                
-                if not full_content:
-                    log("No valid content found in streaming response")
-                    # Try to extract any text content from the response
-                    if response.text:
-                        log("Attempting to extract text content directly")
-                        save_task_log(task_id, "llm_to_system", response.text.strip())
-                        return response.text.strip()
-                    else:
-                        raise ValueError("Empty response from Ollama")
-                
-                remember("assistant", full_content)
-                log(f"←AI REPLY {full_content[:120]}…")
-                
-                # Log the full response to task logs
-                save_task_log(task_id, "llm_to_system", full_content)
-                
-                return full_content
-                
-        except Exception as e:
-            if attempt < max_retries - 1:
-                log(f"Error connecting to Ollama (attempt {attempt+1}/{max_retries}): {str(e)}")
-                log("Retrying in 5 seconds...")
-                time.sleep(5)
-            else:
-                log(f"FATAL: Failed to connect to Ollama after {max_retries} attempts.")
-                error_response = f"""#PY
-print("ERROR: Could not connect to Ollama LLM service.")
-print("Make sure Ollama is running at {OLLAMA_URL}.")
-print("You can:")
-print("1. Start Ollama manually with 'ollama serve'")
-print("2. Or use the Windows helper script in {WORKDIR}")
-"""
-                save_task_log(task_id, "llm_to_system", f"ERROR: Failed to connect to Ollama after {max_retries} attempts.\n\n{error_response}")
-                return error_response
-
-# --------------------------- Main Iteration Loop ---------------------------
-
-def wait_and_continue(goal, task_id, wait_time):
-    """Wait specified time and then continue the task"""
-    log(f"Waiting for {wait_time} seconds before continuing task {task_id}")
-    time.sleep(wait_time)
-    
-    # Update task status
-    if task_id in active_tasks:
-        active_tasks[task_id]["status"] = f"Resuming after {wait_time}s wait"
-        asyncio.run(notify_websockets({
-            "type": "task_update",
-            "id": task_id,
-            "status": f"Resuming after {wait_time}s wait",
-            "output": active_tasks[task_id].get("output", "")
-        }))
-    
-    # Create prompt with wait completion notification
-    prompt = f"""The wait period of {wait_time} seconds has completed.
-Please continue with the goal: {goal}
-
-You can:
-1. Execute code with #SH or #PY blocks
-2. Check files with #CALL read_file(path)
-3. List directory contents with #CALL list_directory(path)
-4. Finish with #DONE when complete
-"""
-    
-    # Continue the iteration
-    iterate_next_step(goal, task_id, prompt)
-
-def iterate_next_step(goal, task_id, prompt, extract_history=False):
-    """Continue iteration with a new prompt"""
-    # Get history if requested
-    history = get_task_conversation(task_id) if extract_history else None
-    
-    # Send to LLM
-    response = ollama_chat(prompt, task_id, history)
-    
-    # Update task output
-    if task_id in active_tasks:
-        active_tasks[task_id]["output"] += f"\n--- Continued ---\n{response}"
-        active_tasks[task_id]["last_response"] = response
-    
-    # Create a new thread to process this response
-    thread = threading.Thread(
-        target=process_response,
-        args=(response, goal, task_id),
-        daemon=True
-    )
-    thread.start()
+    return read_file(filepath)
 
 def get_task_conversation(task_id):
     """Build conversation history from task logs"""
     messages = []
-    task_dir = LOGS_DIR / task_id
+    task_dir = TASK_LOGS_DIR / task_id
     
     if not task_dir.exists():
         return messages
     
     # Get all log files and sort by timestamp
-    log_files = sorted(task_dir.glob(f"{task_id}_*.md"))
+    log_files = sorted(task_dir.glob(f"{task_id}_*_system_to_llm.md")) + \
+                sorted(task_dir.glob(f"{task_id}_*_llm_to_system.md"))
     
     for file in log_files:
         filename = file.name
@@ -1124,11 +894,7 @@ def get_task_conversation(task_id):
         if len(parts) < 4:
             continue
         
-        log_type = '_'.join(parts[2:])
-        
-        # We only want LLM communication logs for history
-        if log_type not in ["system_to_llm", "llm_to_system"]:
-            continue
+        log_type = '_'.join(parts[3:])
         
         try:
             content = read_file(file)
@@ -1141,28 +907,684 @@ def get_task_conversation(task_id):
         except Exception as e:
             log(f"Error reading log file {file}: {e}")
     
-    # If we have too many messages, keep only the most recent ones
-    if len(messages) > 10:
-        # Keep the first system message for context, then the most recent messages
-        messages = messages[:1] + messages[-9:]
+    # Sort messages by timestamp from filename
+    messages.sort(key=lambda msg: msg.get("timestamp", "0"))
+    
+    # If we have too many messages, keep only the most recent ones to stay within context limits
+    total_chars = sum(len(msg.get("content", "")) for msg in messages)
+    if total_chars > MAX_CONTEXT * 4:  # Approximate 4 chars per token
+        # Always keep the first message for context
+        first_msg = messages[0] if messages else None
+        # Keep most recent messages that fit within the context window
+        messages = messages[-10:]  # Start with last 10 messages
+        if first_msg and first_msg not in messages:
+            messages.insert(0, first_msg)
     
     return messages
 
+# =====================================================================
+# ENVIRONMENT CONTEXT AND SYSTEM INFORMATION
+# =====================================================================
+
+def get_environment_context():
+    """
+    Returns critical environment information
+    
+    This is one of the most important functions as it gives the LLM
+    awareness of its execution environment.
+    """
+    context = {}
+    
+    try:
+        # Get user info - critical for understanding privileges
+        context['user'] = run_sh("whoami").strip()
+        context['is_root'] = (context['user'] == 'root')
+        
+        # Get basic system info
+        os_info = run_sh("cat /etc/os-release 2>/dev/null | grep PRETTY_NAME || uname -a").strip()
+        context['os_info'] = os_info
+        
+        # Get kernel info
+        kernel = run_sh("uname -r").strip()
+        context['kernel'] = kernel
+        
+        # Get available disk space
+        disk_space = run_sh("df -h / | tail -n 1 | awk '{print $4}'").strip()
+        context['free_disk_space'] = disk_space
+        
+        # Get memory info
+        mem_info = run_sh("free -h | grep Mem | awk '{print $2\" total, \"$4\" free\"}'").strip()
+        context['memory'] = mem_info
+        
+        # Get CPU info
+        cpu_info = run_sh("grep 'model name' /proc/cpuinfo | head -n1 | cut -d: -f2").strip()
+        context['cpu'] = cpu_info
+        
+        # Check common commands availability
+        cmd_check = {}
+        for cmd in ['apt', 'apt-get', 'yum', 'dnf', 'pip', 'python', 'docker', 'sudo']:
+            cmd_check[cmd] = run_sh(f"command -v {cmd} >/dev/null 2>&1 && echo 'available' || echo 'not available'").strip()
+        context['available_commands'] = cmd_check
+        
+        # Get working directory
+        context['working_dir'] = run_sh("pwd").strip()
+        
+        # Check if docker is installed and running
+        docker_status = run_sh("command -v docker >/dev/null 2>&1 && echo 'installed' || echo 'not installed'").strip()
+        context['docker_status'] = docker_status
+        
+        if docker_status == 'installed':
+            docker_running = run_sh("systemctl is-active docker 2>/dev/null || echo 'unknown'").strip()
+            context['docker_running'] = docker_running
+            
+            if docker_running == 'active':
+                # Get docker version if running
+                docker_version = run_sh("docker --version").strip()
+                context['docker_version'] = docker_version
+        
+        # Get network info
+        ip_address = run_sh("hostname -I | awk '{print $1}'").strip()
+        context['ip_address'] = ip_address
+        
+        # Get hostname
+        hostname = run_sh("hostname").strip()
+        context['hostname'] = hostname
+        
+    except Exception as e:
+        log(f"Error getting environment context: {e}")
+        context['error'] = str(e)
+    
+    return context
+
+# =====================================================================
+# CODE EXECUTION AND VALIDATION
+# =====================================================================
+
+def clean_code(code):
+    """Clean up code by removing any backticks or markdown artifacts"""
+    # Remove any trailing backticks that might have been included
+    code = re.sub(r'`\s*$', '', code)
+    # Remove any other markdown artifacts
+    code = re.sub(r'^`.*$', '', code, flags=re.MULTILINE)
+    return code.strip()
+
+def run_sh(command, timeout=300):
+    """
+    Run shell command with proper error handling
+    
+    Args:
+        command: The shell command to execute
+        timeout: Maximum time in seconds (default: 5 minutes)
+        
+    Returns:
+        Command output (stdout + stderr)
+    """
+    # Clean the command
+    clean_command = clean_code(command)
+    log(f"$ Executing shell command: {clean_command}")
+    
+    try:
+        # Use check=False to capture all output regardless of exit code
+        p = subprocess.run(
+            clean_command, 
+            shell=True, 
+            capture_output=True, 
+            text=True, 
+            timeout=timeout
+        )
+        
+        # Combine stdout and stderr
+        output = p.stdout
+        if p.stderr:
+            if output:
+                output += "\n" + p.stderr
+            else:
+                output = p.stderr
+                
+        # Log command exit code
+        log(f"Command exit code: {p.returncode}")
+        
+        # Include non-zero exit code in output for visibility
+        if p.returncode != 0:
+            output_with_code = f"[Exit code: {p.returncode}]\n{output}"
+            return output_with_code
+            
+        return output
+        
+    except subprocess.TimeoutExpired:
+        log(f"Command timed out after {timeout} seconds: {clean_command}")
+        return f"ERROR: Command timed out after {timeout} seconds"
+        
+    except Exception as e:
+        log(f"Error running shell command: {e}")
+        return f"ERROR: {str(e)}"
+
+def run_py(code, task_id=None):
+    """
+    Run Python code in a separate process
+    
+    Args:
+        code: Python code to execute
+        task_id: Task ID for logging
+        
+    Returns:
+        Execution output
+    """
+    # Clean the code
+    clean_code_str = clean_code(code)
+    
+    # Generate a unique filename for this execution
+    file_id = uuid.uuid4().hex
+    tmp_file = SKILL_DIR / f"tmp_{file_id}.py"
+    
+    try:
+        # Write code to temporary file
+        with open(tmp_file, 'w', encoding='utf-8') as f:
+            f.write(clean_code_str)
+        
+        # Execute the code
+        result = run_sh(f"python {tmp_file}")
+        
+        # Handle syntax errors related to markdown artifacts
+        if "SyntaxError: invalid syntax" in result and ("```" in result or "`" in result):
+            log("Detected syntax error with backticks, attempting to fix...")
+            
+            # More aggressive cleaning
+            cleaner_code = re.sub(r'```.*?```', '', clean_code_str, flags=re.DOTALL)
+            cleaner_code = re.sub(r'`.*?`', '', cleaner_code)
+            
+            # Write the cleaned code and try again
+            with open(tmp_file, 'w', encoding='utf-8') as f:
+                f.write(cleaner_code)
+                
+            result = run_sh(f"python {tmp_file}")
+        
+        # Clean up temp file
+        try:
+            os.remove(tmp_file)
+        except:
+            pass
+            
+        return result
+        
+    except Exception as e:
+        log(f"Error in Python execution: {e}")
+        # Try to clean up temp file
+        try:
+            if tmp_file.exists():
+                os.remove(tmp_file)
+        except:
+            pass
+            
+        return f"ERROR: {str(e)}"
+
+def validate_code(code, kind):
+    """
+    Validate code before execution to identify security issues
+    
+    Args:
+        code: The code to validate
+        kind: Type of code (SH or PY)
+        
+    Returns:
+        Tuple of (is_valid, reason)
+    """
+    # Don't execute empty code
+    if not code.strip():
+        return (False, "Empty code block")
+    
+    # Dangerous patterns for all code types
+    dangerous_patterns = [
+        (r"rm\s+-rf\s+/", "Dangerous recursive deletion of root directory"),
+        (r"mkfs", "Filesystem formatting command detected"),
+        (r"dd\s+if=.*\s+of=/dev/(sd|hd|nvme|xvd)", "Disk overwrite operation detected"),
+        (r":\(\)\{\s+:\|\:\&\s+\};:", "Fork bomb detected"),
+        (r">>/etc/passwd", "Modifying system password file"),
+        (r"chmod\s+777\s+/", "Setting dangerous permissions on system directories"),
+        (r"wget.*\|\s*bash", "Piping web content directly to bash"),
+        (r"curl.*\|\s*bash", "Piping web content directly to bash"),
+    ]
+    
+    # Check for dangerous patterns
+    for pattern, reason in dangerous_patterns:
+        if re.search(pattern, code):
+            return (False, reason)
+    
+    # Additional Python-specific checks
+    if kind == "PY":
+        py_dangerous = [
+            (r"__import__\(['\"]os['\"].*system", "Indirect os.system call"),
+            (r"exec\s*\(.*input", "Executing user input"),
+            (r"eval\s*\(.*input", "Evaluating user input"),
+        ]
+        
+        for pattern, reason in py_dangerous:
+            if re.search(pattern, code):
+                return (False, reason)
+        
+        # Check for potentially dangerous imports
+        dangerous_imports = {
+            "subprocess": "subprocess module can execute shell commands",
+        }
+        
+        for module, reason in dangerous_imports.items():
+            if re.search(rf"import\s+{module}|from\s+{module}\s+import", code):
+                # These aren't necessarily dangerous, but worth logging
+                log(f"Warning: Code contains potentially security-sensitive module: {module}")
+    
+    # Shell-specific checks
+    elif kind == "SH":
+        # Check for usage of dangerous utilities
+        dangerous_utils = [
+            "shred", "fdisk", "mkfs", "sfdisk"
+        ]
+        
+        for util in dangerous_utils:
+            if re.search(rf"\b{util}\b", code):
+                log(f"Warning: Shell code contains potentially destructive utility: {util}")
+    
+    return (True, "Code passed validation")
+
+def extract_code_blocks(txt):
+    """
+    Extract code blocks from LLM output
+    
+    Args:
+        txt: Text to extract code blocks from
+        
+    Returns:
+        Tuple of (kind, code) where kind is SH, PY, or None
+    """
+    # First, try to extract code from markdown-style code blocks with backticks
+    backtick_pattern = r"```(?:python|bash|sh)?\s*#(SH|PY)\s*\n(.*?)```"
+    m_backticks = re.search(backtick_pattern, txt, re.DOTALL)
+    
+    if m_backticks:
+        # Found code in backticks format
+        return (m_backticks.group(1), textwrap.dedent(m_backticks.group(2)))
+    
+    # Alternative format with backticks but no explicit language
+    alt_backtick = r"```\s*#(SH|PY)\s*\n(.*?)```"
+    m_alt = re.search(alt_backtick, txt, re.DOTALL)
+    
+    if m_alt:
+        return (m_alt.group(1), textwrap.dedent(m_alt.group(2)))
+    
+    # If no backtick format found, try the original format
+    m = re.search(r"#(SH|PY)\s*\n(.*)", txt, re.DOTALL)
+    if m:
+        return (m.group(1), textwrap.dedent(m.group(2)))
+    
+    return (None, None)
+
+# =====================================================================
+# FUNCTION CALLING
+# =====================================================================
+
+def extract_functions(txt):
+    """
+    Extract function calls from LLM output
+    
+    Args:
+        txt: Text to extract function calls from
+        
+    Returns:
+        List of (function_name, args) tuples
+    """
+    # Look for #CALL function_name(arguments) pattern
+    pattern = r"#CALL\s+(\w+)\s*\((.*?)\)"
+    matches = re.findall(pattern, txt, re.DOTALL)
+    
+    # Process and clean the arguments
+    result = []
+    for name, args in matches:
+        # Strip whitespace, handle quoted arguments
+        cleaned_args = args.strip()
+        result.append((name, cleaned_args))
+    
+    return result
+
+def execute_functions(functions, task_id):
+    """
+    Execute functions extracted from LLM output
+    
+    Args:
+        functions: List of (function_name, args) tuples
+        task_id: Task ID for logging
+        
+    Returns:
+        Tuple of (results, wait_time)
+    """
+    results = []
+    
+    for func_name, args in functions:
+        log(f"Executing function {func_name}({args}) for task {task_id}")
+        
+        try:
+            # Log function execution start
+            save_task_log(task_id, "system_function_execution", 
+                         f"Function: {func_name}({args})\nExecution start")
+            
+            if func_name == "read_file":
+                # Read file content
+                cleaned_args = args.strip('\'" \t')
+                content = read_file(cleaned_args)
+                
+                # Truncate if too long
+                if len(content) > 4000:
+                    truncated = content[:2000] + "\n...[content truncated, showing 4000/{}]...\n".format(len(content)) + content[-2000:]
+                    results.append(f"#FILE_CONTENT from {cleaned_args}\n{truncated}\n#END_FILE_CONTENT")
+                else:
+                    results.append(f"#FILE_CONTENT from {cleaned_args}\n{content}\n#END_FILE_CONTENT")
+                
+                # Log function result
+                save_task_log(task_id, "system_function_execution", 
+                             f"Function: read_file({cleaned_args})\n\nResult: Read {len(content)} characters")
+                
+            elif func_name == "list_directory":
+                # List directory contents
+                path = args.strip('\'" \t') or "."
+                try:
+                    # Use shlex to properly escape the path
+                    safe_path = shlex.quote(path)
+                    cmd = f"ls -la {safe_path} 2>&1"
+                    dir_content = run_sh(cmd)
+                    
+                    results.append(f"Directory listing for {path}:\n{dir_content}")
+                    
+                    # Log function result
+                    save_task_log(task_id, "system_function_execution", 
+                                 f"Function: list_directory({path})\n\nResult: {len(dir_content.splitlines())} items")
+                    
+                except Exception as e:
+                    error_msg = f"Error listing directory {path}: {e}"
+                    results.append(error_msg)
+                    
+                    # Log function error
+                    save_task_log(task_id, "system_function_execution", 
+                                 f"Function: list_directory({path})\n\nError: {e}")
+                
+            elif func_name == "check_status":
+                # Check status of a task
+                target_task = args.strip('\'" \t') or task_id
+                task_info = get_task_info(target_task)
+                
+                if task_info:
+                    results.append(f"Task {target_task} status: {task_info['status']}")
+                    
+                    # Log function result
+                    save_task_log(task_id, "system_function_execution", 
+                                 f"Function: check_status({target_task})\n\nResult: Status is {task_info['status']}")
+                else:
+                    results.append(f"Task {target_task} not found")
+                    
+                    # Log function result
+                    save_task_log(task_id, "system_function_execution", 
+                                 f"Function: check_status({target_task})\n\nResult: Task not found")
+                
+            elif func_name == "wait":
+                # Wait for specified time
+                try:
+                    wait_seconds = int(args.strip('\'" \t'))
+                    max_wait = 60  # Cap at 60 seconds
+                    wait_time = min(wait_seconds, max_wait)
+                    
+                    results.append(f"Waiting for {wait_time} seconds...")
+                    
+                    # Log function result
+                    save_task_log(task_id, "system_function_execution", 
+                                 f"Function: wait({wait_seconds})\n\nResult: Waiting for {wait_time} seconds")
+                    
+                    return (results, wait_time)
+                    
+                except ValueError:
+                    results.append(f"Invalid wait duration: {args}. Please provide a number of seconds.")
+                    
+                    # Log function error
+                    save_task_log(task_id, "system_function_execution", 
+                                 f"Function: wait({args})\n\nError: Invalid wait duration")
+                    
+            elif func_name == "check_command":
+                # Check if a command exists
+                cmd = args.strip('\'" \t')
+                if not cmd:
+                    results.append("No command specified for check_command")
+                else:
+                    cmd_exists = run_sh(f"command -v {shlex.quote(cmd)} >/dev/null 2>&1 && echo 'available' || echo 'not available'").strip()
+                    results.append(f"Command '{cmd}' is {cmd_exists}")
+                    
+                    # Log function result
+                    save_task_log(task_id, "system_function_execution", 
+                                 f"Function: check_command({cmd})\n\nResult: {cmd_exists}")
+                    
+            elif func_name == "get_environment":
+                # Return full environment information
+                env = get_environment_context()
+                env_str = "Environment Information:\n"
+                for key, value in env.items():
+                    if isinstance(value, dict):
+                        env_str += f"- {key}:\n"
+                        for k, v in value.items():
+                            env_str += f"  - {k}: {v}\n"
+                    else:
+                        env_str += f"- {key}: {value}\n"
+                
+                results.append(env_str)
+                
+                # Log function result
+                save_task_log(task_id, "system_function_execution", 
+                             f"Function: get_environment()\n\nResult: Retrieved {len(env)} environment variables")
+                
+            else:
+                results.append(f"Unknown function: {func_name}")
+                
+                # Log function error
+                save_task_log(task_id, "system_function_execution", 
+                             f"Function: {func_name}({args})\n\nError: Unknown function")
+                             
+        except Exception as e:
+            error_msg = f"Error executing function {func_name}: {str(e)}"
+            results.append(error_msg)
+            log(error_msg)
+            
+            # Log function error
+            save_task_log(task_id, "system_function_execution", 
+                         f"Function: {func_name}({args})\n\nError: {str(e)}")
+    
+    return (results, 0)  # Return with no wait time by default
+
+# =====================================================================
+# OLLAMA LLM INTERACTION
+# =====================================================================
+
+def ollama_chat(prompt, task_id, history=None):
+    """
+    Send a prompt to Ollama and get a response
+    
+    Args:
+        prompt: The prompt to send
+        task_id: Task ID for logging
+        history: Optional conversation history
+        
+    Returns:
+        LLM response text
+    """
+    remember("user", prompt)
+    log(f"→ AI PROMPT: {prompt[:100]}...")
+    
+    # Log the full prompt
+    save_task_log(task_id, "system_to_llm", prompt)
+    
+    # Prepare messages
+    messages = []
+    
+    # Add system message
+    system_content = """
+    You are an autonomous, root-capable agent running on a Linux system. 
+    Return exactly one code block starting with #SH or #PY, or #DONE when finished, 
+    or #SELFUPDATE followed by python code to replace agent.py.
+    You can also use #CALL function_name(args) to call special functions.
+    """
+    
+    # Add history if provided
+    history_messages = []
+    if history:
+        history_messages.extend(history)
+    
+    # Calculate approximate token count for history messages
+    history_tokens = sum(len(msg.get("content", "")) for msg in history_messages) // 4
+    
+    # Truncate history if needed
+    if history_tokens > MAX_CONTEXT:
+        log(f"History too large ({history_tokens} tokens), truncating...")
+        
+        # Keep most recent messages
+        while history_tokens > MAX_CONTEXT * 0.8 and history_messages:
+            removed = history_messages.pop(0)
+            history_tokens -= len(removed.get("content", "")) // 4
+        
+        # Add notice about truncation
+        history_messages.insert(0, {
+            "role": "system",
+            "content": "Note: Earlier conversation history was truncated due to length."
+        })
+    
+    # Add current prompt
+    current_msg = {"role": "user", "content": prompt}
+    
+    # Make the API request
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            # Construct payload
+            payload = {
+                "model": MODEL,
+                "messages": [
+                    {"role": "system", "content": system_content}
+                ] + history_messages + [current_msg],
+                "stream": False
+            }
+            
+            # Send request
+            response = requests.post(
+                f"{OLLAMA_URL}/api/chat", 
+                json=payload, 
+                timeout=600  # 10 minutes timeout
+            )
+            response.raise_for_status()
+            
+            # Process response
+            response_json = response.json()
+            txt = response_json.get("message", {}).get("content", "").strip()
+            
+            if not txt:
+                raise ValueError("Empty response from Ollama")
+            
+            remember("assistant", txt)
+            log(f"← AI REPLY: {txt[:100]}...")
+            
+            # Log the full response
+            save_task_log(task_id, "llm_to_system", txt)
+            
+            return txt
+            
+        except requests.RequestException as e:
+            if attempt < max_retries - 1:
+                log(f"Request error (attempt {attempt+1}/{max_retries}): {e}")
+                time.sleep(5)  # Wait 5 seconds before retrying
+            else:
+                log(f"Failed to communicate with Ollama after {max_retries} attempts: {e}")
+                error_response = """#PY
+print("ERROR: Failed to communicate with Ollama LLM.")
+print(f"Make sure Ollama is running at {OLLAMA_URL}.")
+"""
+                save_task_log(task_id, "system_error", f"Failed to communicate with Ollama: {str(e)}")
+                return error_response
+                
+        except Exception as e:
+            log(f"Unexpected error communicating with Ollama: {e}")
+            error_response = f"""#PY
+print("ERROR: Unexpected error communicating with Ollama: {str(e)}")
+"""
+            save_task_log(task_id, "system_error", f"Unexpected error: {str(e)}")
+            return error_response
+
+# =====================================================================
+# MAIN TASK EXECUTION FUNCTIONS
+# =====================================================================
+
+def wait_and_continue(goal, task_id, wait_time):
+    """
+    Wait for specified time and then continue task execution
+    
+    Args:
+        goal: The goal being pursued
+        task_id: Task ID
+        wait_time: Time to wait in seconds
+    """
+    log(f"Waiting for {wait_time} seconds before continuing task {task_id}")
+    
+    # Update task status
+    update_task_status(task_id, f"Waiting ({wait_time}s)")
+    
+    # Notify websockets
+    asyncio.run(notify_websockets({
+        "type": "task_update",
+        "id": task_id,
+        "status": f"Waiting ({wait_time}s)",
+        "output": active_tasks[task_id].get("output", "")
+    }))
+    
+    # Wait
+    time.sleep(wait_time)
+    
+    # Continue execution
+    prompt = f"""The wait period of {wait_time} seconds has completed.
+Please continue with the goal: {goal}
+
+Available functions:
+- #CALL read_file(path) - Read file content
+- #CALL list_directory(path) - List directory contents
+- #CALL wait(seconds) - Wait before continuing
+- #CALL check_command(cmd) - Check if a command is available
+- #CALL get_environment() - Get complete environment information
+
+Use #DONE when the goal is complete.
+"""
+    
+    # Continue the task
+    iterate_next_step(goal, task_id, prompt)
+
 def process_response(response, goal, task_id):
-    """Process a response from the LLM (execute code, handle functions, etc.)"""
+    """
+    Process a response from the LLM
+    
+    Args:
+        response: LLM response text
+        goal: The goal being pursued
+        task_id: Task ID
+    """
+    # Get current task state
+    if task_id not in active_tasks:
+        log(f"Error: Task {task_id} not found in active tasks")
+        return
+        
     output = active_tasks[task_id].get("output", "")
     iteration = active_tasks[task_id].get("step", 0) + 1
     active_tasks[task_id]["step"] = iteration
     
     # Check for task completion
     if "#DONE" in response.upper():
-        log(f"Task {task_id} complete.")
+        log(f"Task {task_id} complete")
         output += "\n✅ Goal completed successfully."
         active_tasks[task_id]["status"] = "completed"
         active_tasks[task_id]["output"] = output
         
         # Save task log
         save_task_log(task_id, "system_task_complete", "Goal completed successfully")
+        
+        # Update task status in database
+        update_task_status(task_id, "completed")
         
         # Notify websockets
         asyncio.run(notify_websockets({
@@ -1172,8 +1594,13 @@ def process_response(response, goal, task_id):
             "output": output
         }))
         
-        save_history(goal, "completed", output, 
-                   int(time.time() - active_tasks[task_id].get("start_time", time.time())))
+        # Record history
+        save_history(
+            goal, 
+            "completed", 
+            output, 
+            int(time.time() - active_tasks[task_id].get("start_time", time.time()))
+        )
         return
     
     # Check for self-update
@@ -1182,6 +1609,7 @@ def process_response(response, goal, task_id):
         is_valid, reason = validate_code(new_code, "PY")
         
         if not is_valid:
+            log(f"Self-update rejected: {reason}")
             output += f"\n❌ Self-update rejected: {reason}"
             active_tasks[task_id]["output"] = output
             
@@ -1191,14 +1619,16 @@ def process_response(response, goal, task_id):
             # Notify the LLM about the rejection
             prompt = f"""Self-update was rejected: {reason}
 Please continue with the goal using standard code blocks instead of self-update.
+
+Goal: {goal}
 """
             iterate_next_step(goal, task_id, prompt)
             return
         
         # Apply the self-update
         try:
+            # Create backup
             backup_path = WORKDIR / f"agent.py.bak.{int(time.time())}"
-            # Backup current file
             if (WORKDIR / "agent.py").exists():
                 with open(WORKDIR / "agent.py", 'r', encoding='utf-8') as src:
                     with open(backup_path, 'w', encoding='utf-8') as dst:
@@ -1208,7 +1638,7 @@ Please continue with the goal using standard code blocks instead of self-update.
             with open(WORKDIR / "agent.py", 'w', encoding='utf-8') as f:
                 f.write(new_code)
                 
-            log(f"Self-updated code. Backed up to {backup_path}. Restarting…")
+            log(f"Self-updated code. Backed up to {backup_path}")
             output += f"\n🔄 Agent self-updated. Backup saved to {backup_path}. Restarting..."
             active_tasks[task_id]["status"] = "restarting"
             active_tasks[task_id]["output"] = output
@@ -1216,7 +1646,10 @@ Please continue with the goal using standard code blocks instead of self-update.
             # Save task log
             save_task_log(task_id, "system_selfupdate", f"Self-update applied. Backup saved to {backup_path}")
             
-            # Notify websockets before restart
+            # Update task status in database
+            update_task_status(task_id, "restarting")
+            
+            # Notify websockets
             asyncio.run(notify_websockets({
                 "type": "task_update",
                 "id": task_id,
@@ -1224,22 +1657,30 @@ Please continue with the goal using standard code blocks instead of self-update.
                 "output": output
             }))
             
-            save_history(goal, "restarting", output, 
-                       int(time.time() - active_tasks[task_id].get("start_time", time.time())))
+            # Record history
+            save_history(
+                goal, 
+                "restarting", 
+                output, 
+                int(time.time() - active_tasks[task_id].get("start_time", time.time()))
+            )
             
             # Restart the agent
             os.execv(sys.executable, [sys.executable, str(WORKDIR / "agent.py")])
+            
         except Exception as e:
             log(f"Error during self-update: {e}")
             output += f"\n❌ Self-update failed: {str(e)}"
             active_tasks[task_id]["output"] = output
             
             # Save task log
-            save_task_log(task_id, "system_selfupdate_failed", f"Self-update failed: {str(e)}")
+            save_task_log(task_id, "system_error", f"Self-update failed: {str(e)}")
             
             # Notify the LLM about the failure
             prompt = f"""Self-update failed: {str(e)}
 Please continue with the goal using standard code blocks instead of self-update.
+
+Goal: {goal}
 """
             iterate_next_step(goal, task_id, prompt)
             return
@@ -1247,7 +1688,10 @@ Please continue with the goal using standard code blocks instead of self-update.
     # Extract and execute functions
     functions = extract_functions(response)
     if functions:
+        log(f"Found {len(functions)} function calls")
         func_results, wait_time = execute_functions(functions, task_id)
+        
+        # Add function results to output
         output += f"\n--- Function Results (Step {iteration}) ---\n"
         output += "\n".join(func_results)
         active_tasks[task_id]["output"] = output
@@ -1264,15 +1708,6 @@ Please continue with the goal using standard code blocks instead of self-update.
         # Handle wait function
         if wait_time > 0:
             log(f"Wait function called: {wait_time} seconds")
-            active_tasks[task_id]["status"] = f"Waiting ({wait_time}s)"
-            
-            # Notify websockets about waiting
-            asyncio.run(notify_websockets({
-                "type": "task_update",
-                "id": task_id,
-                "status": f"Waiting ({wait_time}s)",
-                "output": output
-            }))
             
             # Schedule continuation after wait
             threading.Thread(
@@ -1283,41 +1718,49 @@ Please continue with the goal using standard code blocks instead of self-update.
             return
         
         # If no wait, continue with function results
-        prompt = f"""Function results:
+        prompt = f"""Function call results:
 {chr(10).join(func_results)}
 
 Continue with the goal: {goal}
 
-You can:
-1. Execute code with #SH or #PY blocks
-2. Check files with #CALL read_file(path)
-3. List directory contents with #CALL list_directory(path)
-4. Finish with #DONE when complete
+Available functions:
+- #CALL read_file(path) - Read file content
+- #CALL list_directory(path) - List directory contents
+- #CALL wait(seconds) - Wait before continuing
+- #CALL check_command(cmd) - Check if a command is available
+- #CALL get_environment() - Get complete environment information
+
+Use #DONE when the goal is complete.
 """
         iterate_next_step(goal, task_id, prompt)
         return
     
     # Extract code blocks
-    kind, code = extract(response)
+    kind, code = extract_code_blocks(response)
     if not kind:
-        log(f"No code detected in task {task_id}; abort.")
-        output += "\n❌ No executable code detected. Aborting."
-        active_tasks[task_id]["status"] = "failed"
+        log(f"No code blocks or function calls detected in task {task_id}")
+        output += "\n❌ No executable code or function calls detected. Please provide a code block starting with #SH or #PY, or use #CALL to call a function."
+        active_tasks[task_id]["status"] = "awaiting_code"
         active_tasks[task_id]["output"] = output
         
         # Save task log
-        save_task_log(task_id, "system_task_failed", "No executable code detected")
+        save_task_log(task_id, "system_error", "No executable code or function calls detected")
         
-        # Notify websockets
-        asyncio.run(notify_websockets({
-            "type": "task_complete",
-            "id": task_id,
-            "status": "failed",
-            "output": output
-        }))
-        
-        save_history(goal, "failed", output, 
-                   int(time.time() - active_tasks[task_id].get("start_time", time.time())))
+        # Notify the LLM
+        prompt = f"""I couldn't find any valid code blocks or function calls in your response.
+
+Please provide a valid code block starting with #SH or #PY, or use #CALL to call a function.
+
+Goal: {goal}
+
+Available functions:
+- #CALL read_file(path) - Read file content
+- #CALL list_directory(path) - List directory contents
+- #CALL wait(seconds) - Wait before continuing
+- #CALL check_command(cmd) - Check if a command is available
+- #CALL get_environment() - Get complete environment information
+"""
+        iterate_next_step(goal, task_id, prompt)
         return
     
     # Validate code before execution
@@ -1336,11 +1779,12 @@ Please revise your approach and provide a safer solution.
 
 Goal: {goal}
 
-You can:
-1. Execute code with #SH or #PY blocks
-2. Check files with #CALL read_file(path)
-3. List directory contents with #CALL list_directory(path)
-4. Finish with #DONE when complete
+Available functions:
+- #CALL read_file(path) - Read file content
+- #CALL list_directory(path) - List directory contents
+- #CALL wait(seconds) - Wait before continuing
+- #CALL check_command(cmd) - Check if a command is available
+- #CALL get_environment() - Get complete environment information
 """
         iterate_next_step(goal, task_id, prompt)
         return
@@ -1348,11 +1792,13 @@ You can:
     # Execute the code
     output += f"\n--- Step {iteration} ({kind}) ---\n"
     output += code
-    output += f"\n--- Output ---\n"
+    active_tasks[task_id]["output"] = output
     
     # Update status before execution
     active_tasks[task_id]["status"] = f"Running (step {iteration})"
-    active_tasks[task_id]["output"] = output
+    update_task_status(task_id, f"Running (step {iteration})")
+    
+    # Notify websockets
     asyncio.run(notify_websockets({
         "type": "task_update",
         "id": task_id,
@@ -1365,7 +1811,13 @@ You can:
     save_task_log(task_id, "system_shell_execution", f"Step {iteration} ({kind}):\n\n{code}")
     
     # Execute code
-    out = run_py(code) if kind == "PY" else run_sh(code)
+    if kind == "PY":
+        out = run_py(code, task_id)
+    else:  # SH
+        out = run_sh(code)
+        
+    # Add output
+    output += f"\n--- Output ---\n"
     output += out
     active_tasks[task_id]["output"] = output
     
@@ -1375,41 +1827,113 @@ You can:
     # Update environment context
     env_context = get_environment_context()
     
-    # Provide output to the LLM with environment context
-    next_prompt = f"""Output from step {iteration}:
+    # Update task environment in database
+    update_task_status(task_id, f"Completed step {iteration}", env_context)
+    
+    # Compose prompt for next step
+    env_summary = []
+    important_keys = ['user', 'is_root', 'os_info', 'working_dir', 'docker_status']
+    for key in important_keys:
+        if key in env_context:
+            value = env_context[key]
+            env_summary.append(f"- {key}: {value}")
+    
+    # Add command availability
+    if 'available_commands' in env_context and isinstance(env_context['available_commands'], dict):
+        available = [cmd for cmd, status in env_context['available_commands'].items() if status == 'available']
+        unavailable = [cmd for cmd, status in env_context['available_commands'].items() if status != 'available']
+        if available:
+            env_summary.append(f"- Available commands: {', '.join(available)}")
+        if unavailable:
+            env_summary.append(f"- Unavailable commands: {', '.join(unavailable)}")
+    
+    # Docker-specific info
+    if 'docker_status' in env_context and env_context['docker_status'] == 'installed':
+        if 'docker_running' in env_context:
+            env_summary.append(f"- Docker running: {env_context['docker_running']}")
+        if 'docker_version' in env_context:
+            env_summary.append(f"- Docker version: {env_context['docker_version']}")
+    
+    # Add environment summary to the prompt
+    environment_block = "\n".join(env_summary)
+    
+    # Prepare output for inclusion in prompt (truncate if too long)
+    if len(out) > 4000:
+        truncated_out = out[:2000] + f"\n...[output truncated, {len(out)} characters total]...\n" + out[-2000:]
+    else:
+        truncated_out = out
+    
+    next_prompt = f"""Output from step {iteration} ({kind}):
 
-{out[:4000] if len(out) > 4000 else out}
-{f"...[output truncated, {len(out)-4000} more characters]..." if len(out) > 4000 else ""}
+{truncated_out}
 
 Current environment:
-- User: {env_context['user']}
-- Root privileges: {env_context['is_root']}
-- Working directory: {env_context['working_dir']}
-- Available commands: {', '.join(env_context['available_commands'].split()) if env_context['available_commands'] else "unknown"}
-{f"- Docker: {env_context['docker_status']} ({env_context['docker_running']})" if 'docker_running' in env_context else f"- Docker: {env_context.get('docker_status', 'unknown')}"}
+{environment_block}
 
 Continue with the goal: {goal}
 
+Available functions:
+- #CALL read_file(path) - Read file content
+- #CALL list_directory(path) - List directory contents
+- #CALL wait(seconds) - Wait before continuing
+- #CALL check_command(cmd) - Check if a command is available
+- #CALL get_environment() - Get complete environment information
+
 You can:
 1. Execute another step with #SH or #PY
-2. Read full output with #CALL read_file(path)
-3. Wait with #CALL wait(seconds)
-4. List directory contents with #CALL list_directory(path)
-5. Finish with #DONE when complete
+2. Call a function with #CALL
+3. Finish with #DONE when complete
 """
     
     iterate_next_step(goal, task_id, next_prompt)
 
-def iterate(goal: str, task_id=None):
-    """Run the AI goal iteration loop with improved environment awareness"""
+def iterate_next_step(goal, task_id, prompt, extract_history=True):
+    """
+    Continue task execution with a new prompt
+    
+    Args:
+        goal: The goal being pursued
+        task_id: Task ID
+        prompt: Prompt for the LLM
+        extract_history: Whether to include conversation history
+    """
+    # Get conversation history if requested
+    history = get_task_conversation(task_id) if extract_history else None
+    
+    # Get LLM response
+    response = ollama_chat(prompt, task_id, history)
+    
+    # Update task output
+    if task_id in active_tasks:
+        active_tasks[task_id]["last_response"] = response
+    
+    # Create a new thread to process this response
+    thread = threading.Thread(
+        target=process_response,
+        args=(response, goal, task_id),
+        daemon=True
+    )
+    thread.start()
+
+def iterate(goal, task_id=None):
+    """
+    Start a new task execution
+    
+    Args:
+        goal: The goal to pursue
+        task_id: Optional task ID (will be generated if not provided)
+        
+    Returns:
+        Dictionary with task ID and status
+    """
     # Generate sequential task ID if none provided
     if not task_id:
         task_id = get_next_task_id()
     
-    # Register task in database
-    register_task(task_id, goal)
-    
+    # Record start time
     start_time = time.time()
+    
+    # Initialize task in active tasks
     active_tasks[task_id] = {
         "goal": goal,
         "status": "starting",
@@ -1425,35 +1949,66 @@ def iterate(goal: str, task_id=None):
         # Get environment context
         env_context = get_environment_context()
         
-        # Create initial system prompt with environment information
-        system_prompt = f"""System: You are an autonomous agent on a Linux system.
+        # Register task in database with environment context
+        register_task(task_id, goal, env_context)
+        
+        # Store environment in active tasks
+        active_tasks[task_id]["environment"] = env_context
+        
+        # Create command availability summary
+        available_cmds = []
+        unavailable_cmds = []
+        if isinstance(env_context.get('available_commands'), dict):
+            for cmd, status in env_context['available_commands'].items():
+                if status == 'available':
+                    available_cmds.append(cmd)
+                else:
+                    unavailable_cmds.append(cmd)
+        
+        # Format the system prompt
+        system_prompt = f"""I am an autonomous agent on a Linux system.
 
-Current environment:
-- User: {env_context['user']}
-- Root privileges: {env_context['is_root']}
-- OS: {env_context['os_info']}
-- Working directory: {env_context['working_dir']}
-- Available commands: {', '.join(env_context['available_commands'].split()) if env_context['available_commands'] else "unknown"}
-{f"- Docker: {env_context['docker_status']} ({env_context['docker_running']})" if 'docker_running' in env_context else f"- Docker: {env_context.get('docker_status', 'unknown')}"}
+GOAL: {goal}
 
-IMPORTANT INSTRUCTIONS:
-1. If running as root, DO NOT use sudo - it's unnecessary and may not be installed
-2. Always check if commands exist before using them
-3. Provide ONE code block per step (#SH or #PY)
-4. You can call functions:
+CURRENT ENVIRONMENT:
+- User: {env_context.get('user', 'unknown')}
+- Root privileges: {env_context.get('is_root', False)}
+- OS: {env_context.get('os_info', 'unknown')}
+- Working directory: {env_context.get('working_dir', 'unknown')}
+- Available commands: {', '.join(available_cmds)}
+{"- Unavailable commands: " + ', '.join(unavailable_cmds) if unavailable_cmds else ""}
+
+CRITICAL INSTRUCTIONS:
+1. {'YOU ARE RUNNING AS ROOT - NEVER USE SUDO!' if env_context.get('is_root') else 'Use sudo for privileged operations'}
+2. Always verify commands exist before using them
+3. Return ONE code block per step, starting with:
+   - #SH for shell commands, OR
+   - #PY for Python code
+4. You can call special functions:
    - #CALL read_file(path) - Read file content
-   - #CALL wait(seconds) - Wait before continuing
-   - #CALL list_directory(path) - List directory contents
+   - #CALL list_directory(path) - List directory contents (use quotes around path)
+   - #CALL wait(seconds) - Pause execution for a specified time
+   - #CALL check_command(cmd) - Check if a command exists
+   - #CALL get_environment() - Get detailed environment information
 5. Return #DONE when the goal is completed
 
-Goal: {goal}
-
-Please analyze this goal and break it down into executable steps.
-First, check the environment to understand what commands and tools are available.
-Then proceed with implementing the solution step by step.
+First, analyze the goal and break it down into executable steps.
 """
         
-        # Save the prompt and get initial response
+        # Update task with prompt
+        active_tasks[task_id]["status"] = "prompting"
+        active_tasks[task_id]["output"] = "Analyzing goal and creating execution plan..."
+        
+        # Notify websockets
+        asyncio.run(notify_websockets({
+            "type": "task_update",
+            "id": task_id,
+            "status": "prompting",
+            "output": "Analyzing goal and creating execution plan...",
+            "step": 0
+        }))
+        
+        # Get initial response from LLM
         response = ollama_chat(system_prompt, task_id)
         
         # Store response in active tasks
@@ -1478,27 +2033,45 @@ Then proceed with implementing the solution step by step.
         # Log error
         save_task_log(task_id, "system_error", f"Error starting task: {str(e)}")
         
-        save_history(goal, "failed", f"❌ Error: {str(e)}", 
-                   int(time.time() - start_time))
+        # Update task status in database
+        update_task_status(task_id, "failed")
+        
+        # Record in history
+        save_history(
+            goal, 
+            "failed", 
+            f"❌ Error: {str(e)}", 
+            int(time.time() - start_time)
+        )
         
         return {"id": task_id, "status": "failed", "error": str(e)}
 
-# --------------------------- WebSocket Notifications ---------------------------
+# =====================================================================
+# WEBSOCKET COMMUNICATION
+# =====================================================================
 
 async def notify_websockets(data):
-    """Send updates to all connected websockets"""
+    """
+    Send updates to all connected websockets
+    
+    Args:
+        data: The data to send
+    """
     disconnected = set()
     for ws in ws_connections:
         try:
             await ws.send_json(data)
-        except:
+        except Exception:
             disconnected.add(ws)
     
     # Remove disconnected websockets
     for ws in disconnected:
-        ws_connections.remove(ws)
+        if ws in ws_connections:
+            ws_connections.remove(ws)
 
-# --------------------------- API & UI App ---------------------------
+# =====================================================================
+# FASTAPI APPLICATION
+# =====================================================================
 
 app = FastAPI(title="Infinite AI Agent")
 
@@ -1537,10 +2110,65 @@ async def api_goal(g: Goal):
 
 @app.get("/api/task/{task_id}")
 async def get_task(task_id: str):
+    # First check active tasks
     if task_id in active_tasks:
-        return active_tasks[task_id]
-    else:
-        return {"error": "Task not found"}
+        task_data = active_tasks[task_id].copy()
+        
+        # Add database info
+        db_info = get_task_info(task_id)
+        if db_info:
+            task_data.update({
+                "created": db_info["created"],
+                "updated": db_info["updated"],
+                "environment": db_info["environment"]
+            })
+        
+        return task_data
+    
+    # If not in active tasks, check database
+    db_info = get_task_info(task_id)
+    if db_info:
+        # Task exists in database but not in memory
+        return {
+            "task_id": db_info["task_id"],
+            "goal": db_info["goal"],
+            "status": db_info["status"],
+            "created": db_info["created"],
+            "updated": db_info["updated"],
+            "environment": db_info["environment"],
+            "output": "Task data not in memory. Check logs for details."
+        }
+        
+    # Task not found
+    return JSONResponse(
+        status_code=404,
+        content={"error": f"Task {task_id} not found"}
+    )
+
+@app.post("/api/task/{task_id}/cancel")
+async def cancel_task(task_id: str):
+    if task_id not in active_tasks:
+        return JSONResponse(
+            status_code=404,
+            content={"error": f"Task {task_id} not found or already completed"}
+        )
+    
+    # Update task status
+    active_tasks[task_id]["status"] = "cancelled"
+    update_task_status(task_id, "cancelled")
+    
+    # Log cancellation
+    save_task_log(task_id, "system_task_cancel", "Task cancelled by user")
+    
+    # Notify websockets
+    await notify_websockets({
+        "type": "task_update",
+        "id": task_id,
+        "status": "cancelled",
+        "output": active_tasks[task_id].get("output", "") + "\n❌ Task cancelled by user."
+    })
+    
+    return {"success": True, "message": "Task cancelled"}
 
 @app.get("/api/tasks")
 async def get_tasks():
@@ -1562,19 +2190,22 @@ async def get_task_logs_endpoint(task_id: str):
         "logs": logs
     }
 
-@app.get("/api/task_log_content/{task_id}/{filename}")
-async def get_task_log_content(task_id: str, filename: str):
-    log_path = LOGS_DIR / task_id / filename
+@app.get("/api/task_log/{task_id}/{filename}")
+async def get_task_log_content_api(task_id: str, filename: str):
+    log_path = TASK_LOGS_DIR / task_id / filename
     
     if not log_path.exists():
-        return {"error": "Log file not found"}
+        return JSONResponse(
+            status_code=404,
+            content={"error": f"Log file {filename} not found for task {task_id}"}
+        )
     
     content = read_file(log_path)
-    return {"content": content}
+    return {"content": content, "filename": filename}
 
 @app.get("/logs/{task_id}/{filename}")
 async def get_log_file(task_id: str, filename: str):
-    log_path = LOGS_DIR / task_id / filename
+    log_path = TASK_LOGS_DIR / task_id / filename
     
     if not log_path.exists():
         return HTMLResponse(content="Log file not found", status_code=404)
@@ -1592,7 +2223,7 @@ async def get_status():
             ollama_status = "running"
             models_data = r.json().get("models", [])
             ollama_models = [m.get("name") for m in models_data if "name" in m]
-    except:
+    except Exception:
         pass
     
     return {
@@ -1600,7 +2231,9 @@ async def get_status():
         "ollama": ollama_status,
         "models": ollama_models,
         "current_model": MODEL,
-        "active_tasks": len(active_tasks)
+        "active_tasks": len(active_tasks),
+        "api_port": API_PORT,
+        "ui_port": UI_PORT
     }
 
 # WebSocket for real-time updates
@@ -1625,7 +2258,7 @@ async def stream_logs(request: Request):
         
         # Add listener that puts logs onto the queue
         def log_callback(entry):
-            # Use create_task instead of run_coroutine_threadsafe
+            # Create task in event loop
             loop = asyncio.get_event_loop()
             if loop.is_running():
                 loop.create_task(queue.put(entry))
@@ -1708,6 +2341,10 @@ def cli():
         except Exception as e:
             print(f"Error: {e}")
 
+# =====================================================================
+# OLLAMA SERVICE MANAGEMENT
+# =====================================================================
+
 def start_ollama():
     """Try to start Ollama if it's not running"""
     log("Attempting to start Ollama...")
@@ -1737,7 +2374,7 @@ def start_ollama():
         return False
 
 def check_ollama():
-    """Check if Ollama is running"""
+    """Check if Ollama is running and models are available"""
     try:
         response = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
         response.raise_for_status()
@@ -1754,7 +2391,11 @@ def check_ollama():
         log(f"Ollama check failed: {e}")
         return False
 
-if __name__=="__main__":
+# =====================================================================
+# MAIN ENTRY POINT
+# =====================================================================
+
+if __name__ == "__main__":
     # Check if Ollama is running and has our model
     if not check_ollama():
         log(f"Ollama is not running or missing model {MODEL}. Attempting to start...")
@@ -2499,79 +3140,623 @@ cat > "$WORKDIR/ui/templates/index.html" <<'HTML'
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Infinite AI Agent</title>
-    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="/static/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f8f9fa;
+        }
+        
+        .navbar {
+            background-color: #343a40 !important;
+            box-shadow: 0 2px 4px rgba(0,0,0,.1);
+        }
+        
+        .card {
+            border: none;
+            box-shadow: 0 0.125rem 0.25rem rgba(0,0,0,.075);
+            margin-bottom: 1.5rem;
+            border-radius: 0.5rem;
+        }
+        
+        .card-header {
+            background-color: #fff;
+            border-bottom: 1px solid rgba(0,0,0,.05);
+            border-radius: 0.5rem 0.5rem 0 0 !important;
+            padding: 1rem 1.25rem;
+        }
+        
+        .task-list {
+            max-height: 600px;
+            overflow-y: auto;
+        }
+        
+        .task-item {
+            border-left: 3px solid transparent;
+            transition: all 0.2s ease;
+        }
+        
+        .task-item:hover {
+            background-color: rgba(0,0,0,.01);
+        }
+        
+        .task-item-running { border-left-color: #007bff; }
+        .task-item-completed { border-left-color: #28a745; }
+        .task-item-failed { border-left-color: #dc3545; }
+        .task-item-pending { border-left-color: #6c757d; }
+        
+        .status-badge {
+            font-size: 0.8em;
+            padding: 0.3em 0.6em;
+            border-radius: 50rem;
+        }
+        
+        .status-running { background-color: #007bff; color: white; }
+        .status-completed { background-color: #28a745; color: white; }
+        .status-failed { background-color: #dc3545; color: white; }
+        .status-pending { background-color: #6c757d; color: white; }
+        
+        .system-status {
+            display: flex;
+            align-items: center;
+            margin-bottom: 0.5rem;
+        }
+        
+        .status-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 0.5rem;
+        }
+        
+        .status-online { background-color: #28a745; }
+        .status-offline { background-color: #dc3545; }
+        
+        .model-badge {
+            background-color: #6610f2;
+            color: white;
+            font-size: 0.75em;
+            margin-right: 0.25rem;
+        }
+        
+        .goal-form {
+            background-color: #fff;
+            border-radius: 0.5rem;
+            padding: 1.5rem;
+            box-shadow: 0 0.125rem 0.25rem rgba(0,0,0,.075);
+        }
+        
+        .stats-card {
+            text-align: center;
+            padding: 1rem;
+        }
+        
+        .stats-icon {
+            font-size: 2rem;
+            margin-bottom: 0.5rem;
+        }
+        
+        .stats-number {
+            font-size: 1.5rem;
+            font-weight: bold;
+        }
+        
+        .stats-label {
+            font-size: 0.9rem;
+            color: #6c757d;
+        }
+        
+        #activeTasks .list-group-item {
+            border-left-width: 3px;
+            transition: all 0.2s;
+        }
+        
+        #activeTasks .list-group-item:hover {
+            background-color: #f8f9fa;
+        }
+        
+        .task-time {
+            font-size: 0.8em;
+            color: #6c757d;
+        }
+        
+        .task-controls {
+            display: flex;
+            gap: 0.5rem;
+        }
+        
+        .btn-icon {
+            padding: 0.25rem 0.5rem;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+    </style>
 </head>
 <body>
-    <div class="container">
-        <header>
-            <div class="logo">
-                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M12 8V4m0 8v-4m0 8v-4m0 8v-4M4 6h16M4 10h16M4 14h16M4 18h16"></path>
-                </svg>
-                <span>Infinite AI Agent</span>
-            </div>
-            <nav>
-                <ul>
-                    <li><a href="/" class="active">Home</a></li>
-                    <li><a href="/history">History</a></li>
-                    <li><a href="/logs">Logs</a></li>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="/">
+                <i class="bi bi-robot"></i> Infinite AI Agent
+            </a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav">
+                    <li class="nav-item">
+                        <a class="nav-link active" href="/"><i class="bi bi-house-fill"></i> Home</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/logs"><i class="bi bi-journal-text"></i> System Logs</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/history"><i class="bi bi-clock-history"></i> Task History</a>
+                    </li>
                 </ul>
-            </nav>
-        </header>
-        
-        <div class="card">
-            <div class="card-header">
-                <h2 class="card-title">System Status</h2>
-                <div>
-                    WebSocket: <span id="ws-status" class="status-offline">Disconnected</span>
-                </div>
-            </div>
-            <div class="status-dashboard" id="system-status">
-                <div class="status-card">
-                    <h3>Ollama Service</h3>
-                    <div id="ollama-status" class="status-value">Checking...</div>
-                </div>
-                <div class="status-card">
-                    <h3>Current Model</h3>
-                    <div id="current-model" class="status-value">-</div>
-                </div>
-                <div class="status-card">
-                    <h3>Active Tasks</h3>
-                    <div id="active-tasks-count" class="status-value">0</div>
-                </div>
-                <div class="status-card">
-                    <h3>Available Models</h3>
-                    <div id="available-models" class="status-value">-</div>
-                </div>
             </div>
         </div>
-        
-        <div class="card">
-            <div class="card-header">
-                <h2 class="card-title">Submit New Goal</h2>
-            </div>
-            <form action="/submit" method="post">
-                <div class="form-group">
-                    <label for="goal">What would you like the AI to do?</label>
-                    <textarea id="goal" name="goal" placeholder="Enter your goal, task or question here..." required></textarea>
+    </nav>
+
+    <div class="container-fluid py-4">
+        <div class="row">
+            <!-- Left Column -->
+            <div class="col-lg-8">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0"><i class="bi bi-list-check"></i> Active Tasks</h5>
+                        <button id="refreshTasks" class="btn btn-sm btn-outline-secondary">
+                            <i class="bi bi-arrow-clockwise"></i> Refresh
+                        </button>
+                    </div>
+                    <div class="card-body p-0">
+                        <div id="activeTasks" class="list-group list-group-flush task-list">
+                            <!-- Tasks will be populated here -->
+                            <div class="text-center py-5" id="noTasksMessage">
+                                <i class="bi bi-inbox" style="font-size: 3rem; color: #dee2e6;"></i>
+                                <p class="mt-3 text-muted">No active tasks</p>
+                            </div>
+                        </div>
+                    </div>
                 </div>
-                <div class="form-group">
-                    <button type="submit" class="button">Submit Goal</button>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0"><i class="bi bi-bar-chart"></i> Task Statistics</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-3">
+                                <div class="stats-card">
+                                    <div class="stats-icon text-primary">
+                                        <i class="bi bi-lightning-charge"></i>
+                                    </div>
+                                    <div class="stats-number" id="activeTasksCount">0</div>
+                                    <div class="stats-label">Active Tasks</div>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="stats-card">
+                                    <div class="stats-icon text-success">
+                                        <i class="bi bi-check-circle"></i>
+                                    </div>
+                                    <div class="stats-number" id="completedTasksCount">0</div>
+                                    <div class="stats-label">Completed</div>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="stats-card">
+                                    <div class="stats-icon text-danger">
+                                        <i class="bi bi-x-circle"></i>
+                                    </div>
+                                    <div class="stats-number" id="failedTasksCount">0</div>
+                                    <div class="stats-label">Failed</div>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="stats-card">
+                                    <div class="stats-icon text-info">
+                                        <i class="bi bi-clock-history"></i>
+                                    </div>
+                                    <div class="stats-number" id="totalTasksCount">0</div>
+                                    <div class="stats-label">Total Tasks</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
-            </form>
-        </div>
-        
-        <div class="card">
-            <div class="card-header">
-                <h2 class="card-title">Active Tasks</h2>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0"><i class="bi bi-clock-history"></i> Recent Tasks</h5>
+                    </div>
+                    <div class="card-body p-0">
+                        <div id="recentTasks" class="list-group list-group-flush">
+                            <!-- Recent tasks will be populated here -->
+                            <div class="text-center py-5" id="noRecentTasksMessage">
+                                <i class="bi bi-clock" style="font-size: 3rem; color: #dee2e6;"></i>
+                                <p class="mt-3 text-muted">No recent tasks</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
-            <div id="active-tasks" class="task-list">
-                <div class="loader"></div>
+
+            <!-- Right Column -->
+            <div class="col-lg-4">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0"><i class="bi bi-send"></i> Start New Task</h5>
+                    </div>
+                    <div class="card-body">
+                        <form action="/submit" method="post" class="goal-form">
+                            <div class="mb-3">
+                                <label for="goal" class="form-label">Enter your goal:</label>
+                                <textarea class="form-control" id="goal" name="goal" rows="3" placeholder="e.g., Install Docker, Create a Python script to analyze logs, etc."></textarea>
+                            </div>
+                            <button type="submit" class="btn btn-primary w-100">
+                                <i class="bi bi-play-fill"></i> Execute Task
+                            </button>
+                        </form>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0"><i class="bi bi-info-circle"></i> System Status</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="system-status">
+                            <span class="status-indicator status-online" id="agentStatus"></span>
+                            <span>Agent: </span>
+                            <span class="ms-1" id="agentStatusText">Online</span>
+                        </div>
+                        <div class="system-status">
+                            <span class="status-indicator" id="ollamaStatus"></span>
+                            <span>Ollama: </span>
+                            <span class="ms-1" id="ollamaStatusText">Checking...</span>
+                        </div>
+                        <hr>
+                        <div class="mb-2">
+                            <strong>Current Model:</strong> <span id="currentModel">Loading...</span>
+                        </div>
+                        <div>
+                            <strong>Available Models:</strong>
+                            <div id="availableModels" class="mt-1">
+                                <div class="spinner-border spinner-border-sm text-primary" role="status">
+                                    <span class="visually-hidden">Loading...</span>
+                                </div>
+                                <span class="ms-1">Loading models...</span>
+                            </div>
+                        </div>
+                        <hr>
+                        <div class="d-flex justify-content-between">
+                            <span><strong>API Port:</strong> <span id="apiPort">8000</span></span>
+                            <span><strong>UI Port:</strong> <span id="uiPort">8080</span></span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0"><i class="bi bi-life-preserver"></i> Quick Links</h5>
+                    </div>
+                    <div class="list-group list-group-flush">
+                        <a href="/logs" class="list-group-item list-group-item-action d-flex align-items-center">
+                            <i class="bi bi-journal-text me-2"></i> System Logs
+                        </a>
+                        <a href="/history" class="list-group-item list-group-item-action d-flex align-items-center">
+                            <i class="bi bi-clock-history me-2"></i> Task History
+                        </a>
+                        <a href="https://docs.anthropic.com/claude/docs" target="_blank" class="list-group-item list-group-item-action d-flex align-items-center">
+                            <i class="bi bi-book me-2"></i> Claude Documentation
+                            <i class="bi bi-box-arrow-up-right ms-auto"></i>
+                        </a>
+                        <a href="https://github.com/ollama/ollama" target="_blank" class="list-group-item list-group-item-action d-flex align-items-center">
+                            <i class="bi bi-github me-2"></i> Ollama GitHub
+                            <i class="bi bi-box-arrow-up-right ms-auto"></i>
+                        </a>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
-    
-    <script src="/static/app.js"></script>
+
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="/static/js/bootstrap.bundle.min.js"></script>
+    <script>
+        $(document).ready(function() {
+            // Function to format date
+            function formatDate(dateString) {
+                const date = new Date(dateString);
+                return date.toLocaleString();
+            }
+            
+            // Function to format duration
+            function formatDuration(seconds) {
+                if (!seconds) return 'N/A';
+                
+                const minutes = Math.floor(seconds / 60);
+                const remainingSeconds = seconds % 60;
+                
+                if (minutes === 0) {
+                    return `${remainingSeconds}s`;
+                } else {
+                    return `${minutes}m ${remainingSeconds}s`;
+                }
+            }
+            
+            // Get status badge class
+            function getStatusBadgeClass(status) {
+                if (status.includes('running') || status.includes('starting')) {
+                    return 'status-running';
+                } else if (status.includes('completed')) {
+                    return 'status-completed';
+                } else if (status.includes('failed') || status.includes('error')) {
+                    return 'status-failed';
+                } else {
+                    return 'status-pending';
+                }
+            }
+            
+            // Get task item class
+            function getTaskItemClass(status) {
+                if (status.includes('running') || status.includes('starting')) {
+                    return 'task-item-running';
+                } else if (status.includes('completed')) {
+                    return 'task-item-completed';
+                } else if (status.includes('failed') || status.includes('error')) {
+                    return 'task-item-failed';
+                } else {
+                    return 'task-item-pending';
+                }
+            }
+            
+            // Function to load active tasks
+            function loadActiveTasks() {
+                $.ajax({
+                    url: '/api/tasks',
+                    method: 'GET',
+                    success: function(data) {
+                        const tasksContainer = $('#activeTasks');
+                        const noTasksMessage = $('#noTasksMessage');
+                        
+                        // Clear previous tasks
+                        tasksContainer.find('.task-item').remove();
+                        
+                        // Update active tasks count
+                        $('#activeTasksCount').text(Object.keys(data).length);
+                        
+                        if (Object.keys(data).length === 0) {
+                            noTasksMessage.show();
+                        } else {
+                            noTasksMessage.hide();
+                            
+                            // Sort tasks by start time (newest first)
+                            const sortedTasks = Object.values(data).sort((a, b) => {
+                                return new Date(b.start_time || 0) - new Date(a.start_time || 0);
+                            });
+                            
+                            // Add tasks to the list
+                            sortedTasks.forEach(task => {
+                                const taskId = task.id || task.task_id;
+                                const goal = task.goal;
+                                const status = task.status;
+                                const step = task.step || 0;
+                                const startTime = task.start_time ? new Date(task.start_time * 1000) : new Date();
+                                
+                                const taskHtml = `
+                                    <div class="list-group-item task-item ${getTaskItemClass(status)}">
+                                        <div class="d-flex justify-content-between align-items-start">
+                                            <div>
+                                                <h6 class="mb-1">
+                                                    <a href="/task/${taskId}" class="text-decoration-none">
+                                                        ${goal}
+                                                    </a>
+                                                </h6>
+                                                <div class="d-flex align-items-center">
+                                                    <span class="badge ${getStatusBadgeClass(status)} status-badge me-2">${status}</span>
+                                                    <small class="text-muted">ID: ${taskId} | Step: ${step}</small>
+                                                </div>
+                                            </div>
+                                            <div class="task-controls">
+                                                <a href="/task/${taskId}" class="btn btn-sm btn-outline-primary btn-icon" title="View Task">
+                                                    <i class="bi bi-eye"></i>
+                                                </a>
+                                                <a href="/task_logs/${taskId}" class="btn btn-sm btn-outline-secondary btn-icon" title="View Logs">
+                                                    <i class="bi bi-file-text"></i>
+                                                </a>
+                                                <button data-task-id="${taskId}" class="btn btn-sm btn-outline-danger btn-icon cancel-task-btn" title="Cancel Task" ${status.includes('completed') || status.includes('failed') ? 'disabled' : ''}>
+                                                    <i class="bi bi-x-circle"></i>
+                                                </button>
+                                            </div>
+                                        </div>
+                                        <div class="task-time mt-1">
+                                            <small class="text-muted">Started: ${startTime.toLocaleString()}</small>
+                                        </div>
+                                    </div>
+                                `;
+                                
+                                tasksContainer.append(taskHtml);
+                            });
+                        }
+                    },
+                    error: function(xhr, status, error) {
+                        console.error('Error loading active tasks:', error);
+                    }
+                });
+            }
+            
+            // Function to load recent tasks
+            function loadRecentTasks() {
+                $.ajax({
+                    url: '/api/history?limit=5',
+                    method: 'GET',
+                    success: function(data) {
+                        const tasksContainer = $('#recentTasks');
+                        const noRecentTasksMessage = $('#noRecentTasksMessage');
+                        
+                        // Clear previous tasks
+                        tasksContainer.find('.task-item').remove();
+                        
+                        if (data.length === 0) {
+                            noRecentTasksMessage.show();
+                        } else {
+                            noRecentTasksMessage.hide();
+                            
+                            // Update task counts
+                            let completedCount = 0;
+                            let failedCount = 0;
+                            
+                            // Add tasks to the list
+                            data.forEach(task => {
+                                const taskId = task.id;
+                                const goal = task.goal;
+                                const status = task.status;
+                                const timestamp = formatDate(task.timestamp);
+                                const duration = formatDuration(task.duration);
+                                
+                                // Update counts
+                                if (status === 'completed') {
+                                    completedCount++;
+                                } else if (status === 'failed') {
+                                    failedCount++;
+                                }
+                                
+                                const taskHtml = `
+                                    <div class="list-group-item task-item ${getTaskItemClass(status)}">
+                                        <div class="d-flex justify-content-between align-items-start">
+                                            <div>
+                                                <h6 class="mb-1">
+                                                    <a href="/task/${taskId}" class="text-decoration-none">
+                                                        ${goal}
+                                                    </a>
+                                                </h6>
+                                                <div class="d-flex align-items-center">
+                                                    <span class="badge ${getStatusBadgeClass(status)} status-badge me-2">${status}</span>
+                                                    <small class="text-muted">ID: ${taskId} | Duration: ${duration}</small>
+                                                </div>
+                                            </div>
+                                            <div class="task-controls">
+                                                <a href="/task/${taskId}" class="btn btn-sm btn-outline-primary btn-icon" title="View Task">
+                                                    <i class="bi bi-eye"></i>
+                                                </a>
+                                                <a href="/task_logs/${taskId}" class="btn btn-sm btn-outline-secondary btn-icon" title="View Logs">
+                                                    <i class="bi bi-file-text"></i>
+                                                </a>
+                                            </div>
+                                        </div>
+                                        <div class="task-time mt-1">
+                                            <small class="text-muted">Completed: ${timestamp}</small>
+                                        </div>
+                                    </div>
+                                `;
+                                
+                                tasksContainer.append(taskHtml);
+                            });
+                            
+                            // Update statistics
+                            $('#completedTasksCount').text(completedCount);
+                            $('#failedTasksCount').text(failedCount);
+                            $('#totalTasksCount').text(data.length);
+                        }
+                    },
+                    error: function(xhr, status, error) {
+                        console.error('Error loading recent tasks:', error);
+                    }
+                });
+            }
+            
+            // Function to load system status
+            function loadSystemStatus() {
+                $.ajax({
+                    url: '/api/status',
+                    method: 'GET',
+                    success: function(data) {
+                        // Update Ollama status
+                        if (data.ollama === 'running') {
+                            $('#ollamaStatus').removeClass('status-offline').addClass('status-online');
+                            $('#ollamaStatusText').text('Online');
+                        } else {
+                            $('#ollamaStatus').removeClass('status-online').addClass('status-offline');
+                            $('#ollamaStatusText').text('Offline');
+                        }
+                        
+                        // Update current model
+                        $('#currentModel').text(data.current_model);
+                        
+                        // Update available models
+                        if (data.models && data.models.length > 0) {
+                            const modelsContainer = $('#availableModels');
+                            modelsContainer.empty();
+                            
+                            data.models.forEach(model => {
+                                modelsContainer.append(`
+                                    <span class="badge model-badge">${model}</span>
+                                `);
+                            });
+                        } else {
+                            $('#availableModels').html('<span class="text-muted">No models available</span>');
+                        }
+                        
+                        // Update ports
+                        $('#apiPort').text(data.api_port || 8000);
+                        $('#uiPort').text(data.ui_port || 8080);
+                    },
+                    error: function(xhr, status, error) {
+                        console.error('Error loading system status:', error);
+                        
+                        // Update status indicators to offline
+                        $('#ollamaStatus').removeClass('status-online').addClass('status-offline');
+                        $('#ollamaStatusText').text('Error connecting');
+                    }
+                });
+            }
+            
+            // Cancel task
+            $(document).on('click', '.cancel-task-btn', function() {
+                const taskId = $(this).data('task-id');
+                
+                if (confirm(`Are you sure you want to cancel task ${taskId}?`)) {
+                    $.ajax({
+                        url: `/api/task/${taskId}/cancel`,
+                        method: 'POST',
+                        success: function(data) {
+                            if (data.success) {
+                                alert('Task cancelled successfully');
+                                loadActiveTasks();
+                            } else {
+                                alert(`Failed to cancel task: ${data.error}`);
+                            }
+                        },
+                        error: function(xhr, status, error) {
+                            alert(`Error: ${error}`);
+                        }
+                    });
+                }
+            });
+            
+            // Refresh button
+            $('#refreshTasks').click(function() {
+                loadActiveTasks();
+                loadRecentTasks();
+                loadSystemStatus();
+            });
+            
+            // Load data on page load
+            loadActiveTasks();
+            loadRecentTasks();
+            loadSystemStatus();
+            
+            // Set up auto-refresh
+            setInterval(function() {
+                loadActiveTasks();
+                loadSystemStatus();
+            }, 10000);  // Refresh every 10 seconds
+        });
+    </script>
 </body>
 </html>
 HTML
@@ -2584,41 +3769,750 @@ cat > "$WORKDIR/ui/templates/logs.html" <<'HTML'
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Logs - Infinite AI Agent</title>
-    <link rel="stylesheet" href="/static/styles.css">
+    <title>Infinite AI - System Logs</title>
+    <link rel="stylesheet" href="/static/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f8f9fa;
+        }
+        
+        .navbar {
+            background-color: #343a40 !important;
+            box-shadow: 0 2px 4px rgba(0,0,0,.1);
+        }
+        
+        .log-container {
+            background-color: #212529;
+            color: #f8f9fa;
+            font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+            font-size: 0.9rem;
+            border-radius: 0.5rem;
+            padding: 1rem;
+            height: calc(100vh - 180px);
+            overflow-y: auto;
+            position: relative;
+        }
+        
+        .log-entry {
+            margin-bottom: 0.25rem;
+            padding: 0.25rem 0.5rem;
+            border-radius: 0.25rem;
+            word-wrap: break-word;
+            border-left: 3px solid transparent;
+        }
+        
+        .log-entry:hover {
+            background-color: rgba(255, 255, 255, 0.05);
+        }
+        
+        .log-timestamp {
+            color: #6c757d;
+            margin-right: 0.5rem;
+        }
+        
+        .log-info { border-left-color: #0dcaf0; }
+        .log-warning { border-left-color: #ffc107; }
+        .log-error { border-left-color: #dc3545; }
+        .log-success { border-left-color: #198754; }
+        
+        .log-toolbar {
+            position: sticky;
+            top: 0;
+            background-color: #212529;
+            padding: 0.5rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            z-index: 100;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .log-search {
+            position: relative;
+        }
+        
+        .log-search .form-control {
+            background-color: #2c3034;
+            border-color: #495057;
+            color: #fff;
+            padding-left: 2rem;
+        }
+        
+        .log-search .search-icon {
+            position: absolute;
+            left: 0.5rem;
+            top: 50%;
+            transform: translateY(-50%);
+            color: #6c757d;
+        }
+        
+        .search-clear {
+            position: absolute;
+            right: 0.5rem;
+            top: 50%;
+            transform: translateY(-50%);
+            color: #6c757d;
+            cursor: pointer;
+            display: none;
+        }
+        
+        .filter-badge {
+            cursor: pointer;
+            user-select: none;
+            transition: all 0.2s;
+        }
+        
+        .filter-badge.active {
+            background-color: #0d6efd !important;
+            color: white !important;
+        }
+        
+        .auto-scroll-toggle {
+            cursor: pointer;
+            user-select: none;
+        }
+        
+        .btn-icon {
+            padding: 0.25rem 0.5rem;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            margin-left: 0.25rem;
+        }
+        
+        .status-card {
+            background-color: #fff;
+            border-radius: 0.5rem;
+            padding: 1rem;
+            margin-bottom: 1rem;
+            box-shadow: 0 0.125rem 0.25rem rgba(0,0,0,.075);
+        }
+        
+        .status-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 0.5rem;
+        }
+        
+        .status-online { background-color: #28a745; }
+        .status-offline { background-color: #dc3545; }
+        
+        .model-badge {
+            background-color: #6610f2;
+            color: white;
+            font-size: 0.75em;
+            margin-right: 0.25rem;
+        }
+        
+        #noLogsMessage {
+            text-align: center;
+            padding: 2rem;
+            color: #6c757d;
+        }
+        
+        .log-actions {
+            display: flex;
+            gap: 0.5rem;
+        }
+        
+        .log-stats {
+            margin-bottom: 1rem;
+        }
+        
+        .log-count {
+            font-size: 1.2rem;
+            font-weight: bold;
+        }
+    </style>
 </head>
 <body>
-    <div class="container">
-        <header>
-            <div class="logo">
-                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M12 8V4m0 8v-4m0 8v-4m0 8v-4M4 6h16M4 10h16M4 14h16M4 18h16"></path>
-                </svg>
-                <span>Infinite AI Agent</span>
-            </div>
-            <nav>
-                <ul>
-                    <li><a href="/">Home</a></li>
-                    <li><a href="/history">History</a></li>
-                    <li><a href="/logs" class="active">Logs</a></li>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="/">
+                <i class="bi bi-robot"></i> Infinite AI Agent
+            </a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav">
+                    <li class="nav-item">
+                        <a class="nav-link" href="/"><i class="bi bi-house-fill"></i> Home</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link active" href="/logs"><i class="bi bi-journal-text"></i> System Logs</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/history"><i class="bi bi-clock-history"></i> Task History</a>
+                    </li>
                 </ul>
-            </nav>
-        </header>
-        
-        <div class="card">
-            <div class="card-header">
-                <h2 class="card-title">Live Logs</h2>
-                <div>
-                    WebSocket: <span id="ws-status" class="status-offline">Disconnected</span>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container-fluid py-4">
+        <div class="row">
+            <!-- Main Content -->
+            <div class="col-lg-9">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h2>System Logs</h2>
+                    <div class="log-actions">
+                        <button id="downloadLogsBtn" class="btn btn-outline-secondary">
+                            <i class="bi bi-download"></i> Download Logs
+                        </button>
+                        <button id="clearLogsBtn" class="btn btn-outline-danger">
+                            <i class="bi bi-trash"></i> Clear View
+                        </button>
+                    </div>
+                </div>
+                
+                <div class="log-stats d-flex gap-3">
+                    <div class="bg-light p-2 rounded">
+                        <small class="text-muted">Total Logs</small>
+                        <div class="log-count" id="totalLogCount">0</div>
+                    </div>
+                    <div class="bg-light p-2 rounded">
+                        <small class="text-muted">Info</small>
+                        <div class="log-count text-info" id="infoLogCount">0</div>
+                    </div>
+                    <div class="bg-light p-2 rounded">
+                        <small class="text-muted">Warning</small>
+                        <div class="log-count text-warning" id="warningLogCount">0</div>
+                    </div>
+                    <div class="bg-light p-2 rounded">
+                        <small class="text-muted">Error</small>
+                        <div class="log-count text-danger" id="errorLogCount">0</div>
+                    </div>
+                </div>
+                
+                <div class="log-container">
+                    <div class="log-toolbar">
+                        <div class="d-flex gap-2 align-items-center">
+                            <div class="log-search">
+                                <i class="bi bi-search search-icon"></i>
+                                <input type="text" class="form-control form-control-sm" id="logSearch" placeholder="Search logs...">
+                                <i class="bi bi-x-circle search-clear" id="clearSearch"></i>
+                            </div>
+                            
+                            <div class="filter-badges d-flex gap-1">
+                                <span class="badge bg-secondary filter-badge active" data-filter="all">All</span>
+                                <span class="badge bg-info text-dark filter-badge" data-filter="info">Info</span>
+                                <span class="badge bg-warning text-dark filter-badge" data-filter="warning">Warning</span>
+                                <span class="badge bg-danger filter-badge" data-filter="error">Error</span>
+                                <span class="badge bg-success filter-badge" data-filter="success">Success</span>
+                            </div>
+                        </div>
+                        
+                        <div class="d-flex align-items-center">
+                            <div class="form-check form-switch me-2">
+                                <input class="form-check-input" type="checkbox" id="autoScrollToggle" checked>
+                                <label class="form-check-label text-light auto-scroll-toggle" for="autoScrollToggle">Auto-scroll</label>
+                            </div>
+                            
+                            <button class="btn btn-sm btn-outline-light btn-icon" id="pauseLogsBtn" title="Pause Log Stream">
+                                <i class="bi bi-pause-fill"></i>
+                            </button>
+                            
+                            <button class="btn btn-sm btn-outline-light btn-icon" id="resumeLogsBtn" title="Resume Log Stream" style="display: none;">
+                                <i class="bi bi-play-fill"></i>
+                            </button>
+                            
+                            <button class="btn btn-sm btn-outline-light btn-icon" id="scrollToBottomBtn" title="Scroll to Bottom">
+                                <i class="bi bi-arrow-down-square"></i>
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div id="logEntries">
+                        <div id="noLogsMessage">
+                            <i class="bi bi-journal-text" style="font-size: 3rem;"></i>
+                            <p class="mt-3">Waiting for logs...</p>
+                        </div>
+                    </div>
                 </div>
             </div>
-            <div id="log-console" class="console">
-                <div class="console-line">Connecting to log stream...</div>
+            
+            <!-- Sidebar -->
+            <div class="col-lg-3">
+                <div class="status-card">
+                    <h5 class="mb-3"><i class="bi bi-info-circle"></i> System Status</h5>
+                    <div class="d-flex align-items-center mb-2">
+                        <span class="status-indicator status-online" id="agentStatus"></span>
+                        <span>Agent: </span>
+                        <span class="ms-1" id="agentStatusText">Online</span>
+                    </div>
+                    <div class="d-flex align-items-center mb-2">
+                        <span class="status-indicator" id="ollamaStatus"></span>
+                        <span>Ollama: </span>
+                        <span class="ms-1" id="ollamaStatusText">Checking...</span>
+                    </div>
+                    <hr>
+                    <div class="mb-2">
+                        <strong>Current Model:</strong> <span id="currentModel">Loading...</span>
+                    </div>
+                    <div>
+                        <strong>Available Models:</strong>
+                        <div id="availableModels" class="mt-1">
+                            <div class="spinner-border spinner-border-sm text-primary" role="status">
+                                <span class="visually-hidden">Loading...</span>
+                            </div>
+                            <span class="ms-1">Loading models...</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="status-card">
+                    <h5 class="mb-3"><i class="bi bi-gear"></i> Log Settings</h5>
+                    <div class="mb-3">
+                        <label for="logLimit" class="form-label">Max Logs to Display:</label>
+                        <select class="form-select" id="logLimit">
+                            <option value="100">100 entries</option>
+                            <option value="200">200 entries</option>
+                            <option value="500">500 entries</option>
+                            <option value="1000">1000 entries</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label for="refreshRate" class="form-label">Auto-Refresh Rate:</label>
+                        <select class="form-select" id="refreshRate">
+                            <option value="1000">1 second</option>
+                            <option value="2000">2 seconds</option>
+                            <option value="5000" selected>5 seconds</option>
+                            <option value="10000">10 seconds</option>
+                            <option value="0">Disabled</option>
+                        </select>
+                    </div>
+                    <div class="form-check mb-3">
+                        <input class="form-check-input" type="checkbox" id="showTimestamps" checked>
+                        <label class="form-check-label" for="showTimestamps">
+                            Show Timestamps
+                        </label>
+                    </div>
+                    <div class="form-check mb-3">
+                        <input class="form-check-input" type="checkbox" id="enableHighlighting" checked>
+                        <label class="form-check-label" for="enableHighlighting">
+                            Enable Log Highlighting
+                        </label>
+                    </div>
+                </div>
+                
+                <div class="status-card">
+                    <h5 class="mb-3"><i class="bi bi-link-45deg"></i> Quick Links</h5>
+                    <div class="list-group list-group-flush">
+                        <a href="/" class="list-group-item list-group-item-action d-flex align-items-center">
+                            <i class="bi bi-house-fill me-2"></i> Dashboard
+                        </a>
+                        <a href="/history" class="list-group-item list-group-item-action d-flex align-items-center">
+                            <i class="bi bi-clock-history me-2"></i> Task History
+                        </a>
+                        <a href="#" id="refreshSystemStatusBtn" class="list-group-item list-group-item-action d-flex align-items-center">
+                            <i class="bi bi-arrow-clockwise me-2"></i> Refresh Status
+                        </a>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
-    
-    <script src="/static/app.js"></script>
+
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="/static/js/bootstrap.bundle.min.js"></script>
+    <script>
+        $(document).ready(function() {
+            // Variables
+            let logEntries = [];
+            let filteredEntries = [];
+            let paused = false;
+            let filterType = 'all';
+            let searchTerm = '';
+            let autoScroll = true;
+            let eventSource = null;
+            let logCounts = {
+                total: 0,
+                info: 0,
+                warning: 0,
+                error: 0,
+                success: 0
+            };
+            
+            // Elements
+            const logEntriesContainer = $('#logEntries');
+            const noLogsMessage = $('#noLogsMessage');
+            const logSearch = $('#logSearch');
+            const clearSearch = $('#clearSearch');
+            const filterBadges = $('.filter-badge');
+            const autoScrollToggle = $('#autoScrollToggle');
+            const pauseLogsBtn = $('#pauseLogsBtn');
+            const resumeLogsBtn = $('#resumeLogsBtn');
+            const scrollToBottomBtn = $('#scrollToBottomBtn');
+            const clearLogsBtn = $('#clearLogsBtn');
+            const downloadLogsBtn = $('#downloadLogsBtn');
+            const logLimit = $('#logLimit');
+            const refreshRate = $('#refreshRate');
+            const showTimestamps = $('#showTimestamps');
+            const enableHighlighting = $('#enableHighlighting');
+            
+            // Initialize system status and log stream
+            loadSystemStatus();
+            initLogStream();
+            
+            // Function to determine log level class
+            function getLogLevelClass(message) {
+                const lowerMessage = message.toLowerCase();
+                
+                if (lowerMessage.includes('error') || lowerMessage.includes('fail') || lowerMessage.includes('exception')) {
+                    return 'log-error';
+                } else if (lowerMessage.includes('warn')) {
+                    return 'log-warning';
+                } else if (lowerMessage.includes('success') || lowerMessage.includes('completed') || lowerMessage.includes('done')) {
+                    return 'log-success';
+                } else {
+                    return 'log-info';
+                }
+            }
+            
+            // Function to format timestamp
+            function formatTimestamp(timestamp) {
+                const date = new Date(timestamp);
+                const hours = date.getHours().toString().padStart(2, '0');
+                const minutes = date.getMinutes().toString().padStart(2, '0');
+                const seconds = date.getSeconds().toString().padStart(2, '0');
+                const ms = date.getMilliseconds().toString().padStart(3, '0');
+                
+                return `${hours}:${minutes}:${seconds}.${ms}`;
+            }
+            
+            // Function to add log entry
+            function addLogEntry(entry) {
+                // Add to log entries array
+                logEntries.push(entry);
+                
+                // Limit the number of entries
+                const maxEntries = parseInt(logLimit.val());
+                if (logEntries.length > maxEntries) {
+                    logEntries = logEntries.slice(-maxEntries);
+                }
+                
+                // Update log counts
+                logCounts.total = logEntries.length;
+                
+                // Count by type
+                logCounts.info = 0;
+                logCounts.warning = 0;
+                logCounts.error = 0;
+                logCounts.success = 0;
+                
+                logEntries.forEach(entry => {
+                    const logClass = getLogLevelClass(entry.message);
+                    if (logClass === 'log-info') logCounts.info++;
+                    else if (logClass === 'log-warning') logCounts.warning++;
+                    else if (logClass === 'log-error') logCounts.error++;
+                    else if (logClass === 'log-success') logCounts.success++;
+                });
+                
+                // Update count display
+                $('#totalLogCount').text(logCounts.total);
+                $('#infoLogCount').text(logCounts.info);
+                $('#warningLogCount').text(logCounts.warning);
+                $('#errorLogCount').text(logCounts.error);
+                
+                // Filter and display logs
+                filterLogs();
+            }
+            
+            // Function to filter logs
+            function filterLogs() {
+                // Apply filters
+                filteredEntries = logEntries.filter(entry => {
+                    const logClass = getLogLevelClass(entry.message);
+                    const matchesFilter = filterType === 'all' || 
+                                        (filterType === 'info' && logClass === 'log-info') ||
+                                        (filterType === 'warning' && logClass === 'log-warning') ||
+                                        (filterType === 'error' && logClass === 'log-error') ||
+                                        (filterType === 'success' && logClass === 'log-success');
+                    
+                    const matchesSearch = searchTerm === '' || 
+                                        entry.message.toLowerCase().includes(searchTerm.toLowerCase());
+                    
+                    return matchesFilter && matchesSearch;
+                });
+                
+                // Render filtered logs
+                renderLogs();
+            }
+            
+            // Function to render logs
+            function renderLogs() {
+                // Clear existing logs
+                logEntriesContainer.empty();
+                
+                if (filteredEntries.length === 0) {
+                    noLogsMessage.show();
+                } else {
+                    noLogsMessage.hide();
+                    
+                    // Add entries
+                    filteredEntries.forEach(entry => {
+                        const timestamp = showTimestamps.is(':checked') ? 
+                                        `<span class="log-timestamp">[${formatTimestamp(entry.timestamp)}]</span>` : '';
+                        
+                        const logClass = enableHighlighting.is(':checked') ? 
+                                        getLogLevelClass(entry.message) : '';
+                        
+                        const logHtml = `
+                            <div class="log-entry ${logClass}">
+                                ${timestamp}${entry.message}
+                            </div>
+                        `;
+                        
+                        logEntriesContainer.append(logHtml);
+                    });
+                    
+                    // Scroll to bottom if auto-scroll is enabled
+                    if (autoScroll) {
+                        const container = $('.log-container');
+                        container.scrollTop(container[0].scrollHeight);
+                    }
+                }
+            }
+            
+            // Function to initialize log stream
+            function initLogStream() {
+                // Close existing event source if open
+                if (eventSource) {
+                    eventSource.close();
+                }
+                
+                // Create new event source
+                eventSource = new EventSource('/logs/stream');
+                
+                // Handle initial logs
+                eventSource.addEventListener('logs', function(event) {
+                    const logs = JSON.parse(event.data);
+                    
+                    logs.forEach(log => {
+                        addLogEntry(log);
+                    });
+                });
+                
+                // Handle log events
+                eventSource.addEventListener('log', function(event) {
+                    if (!paused) {
+                        const log = JSON.parse(event.data);
+                        addLogEntry(log);
+                    }
+                });
+                
+                // Handle heartbeat events
+                eventSource.addEventListener('heartbeat', function(event) {
+                    // Heartbeat received, connection is alive
+                });
+                
+                // Handle errors
+                eventSource.onerror = function(error) {
+                    console.error('EventSource error:', error);
+                    
+                    // Try to reconnect after a delay
+                    setTimeout(function() {
+                        initLogStream();
+                    }, 5000);
+                };
+            }
+            
+            // Function to load system status
+            function loadSystemStatus() {
+                $.ajax({
+                    url: '/api/status',
+                    method: 'GET',
+                    success: function(data) {
+                        // Update Ollama status
+                        if (data.ollama === 'running') {
+                            $('#ollamaStatus').removeClass('status-offline').addClass('status-online');
+                            $('#ollamaStatusText').text('Online');
+                        } else {
+                            $('#ollamaStatus').removeClass('status-online').addClass('status-offline');
+                            $('#ollamaStatusText').text('Offline');
+                        }
+                        
+                        // Update current model
+                        $('#currentModel').text(data.current_model);
+                        
+                        // Update available models
+                        if (data.models && data.models.length > 0) {
+                            const modelsContainer = $('#availableModels');
+                            modelsContainer.empty();
+                            
+                            data.models.forEach(model => {
+                                modelsContainer.append(`
+                                    <span class="badge model-badge">${model}</span>
+                                `);
+                            });
+                        } else {
+                            $('#availableModels').html('<span class="text-muted">No models available</span>');
+                        }
+                    },
+                    error: function(xhr, status, error) {
+                        console.error('Error loading system status:', error);
+                        
+                        // Update status indicators to offline
+                        $('#ollamaStatus').removeClass('status-online').addClass('status-offline');
+                        $('#ollamaStatusText').text('Error connecting');
+                    }
+                });
+            }
+            
+            // Search functionality
+            logSearch.on('input', function() {
+                searchTerm = $(this).val();
+                
+                if (searchTerm === '') {
+                    clearSearch.hide();
+                } else {
+                    clearSearch.show();
+                }
+                
+                filterLogs();
+            });
+            
+            // Clear search
+            clearSearch.on('click', function() {
+                logSearch.val('');
+                searchTerm = '';
+                clearSearch.hide();
+                filterLogs();
+            });
+            
+            // Filter badges
+            filterBadges.on('click', function() {
+                filterBadges.removeClass('active');
+                $(this).addClass('active');
+                
+                filterType = $(this).data('filter');
+                filterLogs();
+            });
+            
+            // Auto-scroll toggle
+            autoScrollToggle.on('change', function() {
+                autoScroll = $(this).is(':checked');
+                
+                if (autoScroll) {
+                    const container = $('.log-container');
+                    container.scrollTop(container[0].scrollHeight);
+                }
+            });
+            
+            // Pause/Resume logs
+            pauseLogsBtn.on('click', function() {
+                paused = true;
+                pauseLogsBtn.hide();
+                resumeLogsBtn.show();
+            });
+            
+            resumeLogsBtn.on('click', function() {
+                paused = false;
+                resumeLogsBtn.hide();
+                pauseLogsBtn.show();
+            });
+            
+            // Scroll to bottom
+            scrollToBottomBtn.on('click', function() {
+                const container = $('.log-container');
+                container.scrollTop(container[0].scrollHeight);
+            });
+            
+            // Clear logs
+            clearLogsBtn.on('click', function() {
+                if (confirm('Are you sure you want to clear all logs from the view? This will not delete logs from the server.')) {
+                    logEntries = [];
+                    filteredEntries = [];
+                    logCounts = {
+                        total: 0,
+                        info: 0,
+                        warning: 0,
+                        error: 0,
+                        success: 0
+                    };
+                    
+                    // Update count display
+                    $('#totalLogCount').text(0);
+                    $('#infoLogCount').text(0);
+                    $('#warningLogCount').text(0);
+                    $('#errorLogCount').text(0);
+                    
+                    renderLogs();
+                }
+            });
+            
+            // Download logs
+            downloadLogsBtn.on('click', function() {
+                // Create log content
+                let content = '';
+                
+                logEntries.forEach(entry => {
+                    content += `[${formatTimestamp(entry.timestamp)}] ${entry.message}\n`;
+                });
+                
+                // Create blob and download
+                const blob = new Blob([content], { type: 'text/plain' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                const date = new Date().toISOString().replace(/:/g, '-').split('.')[0];
+                
+                a.href = url;
+                a.download = `infinite_ai_logs_${date}.txt`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            });
+            
+            // Log limit change
+            logLimit.on('change', function() {
+                const maxEntries = parseInt($(this).val());
+                
+                // Limit the number of entries
+                if (logEntries.length > maxEntries) {
+                    logEntries = logEntries.slice(-maxEntries);
+                    filterLogs();
+                }
+            });
+            
+            // Refresh rate change
+            refreshRate.on('change', function() {
+                const rate = parseInt($(this).val());
+                
+                // If disabled, pause logs
+                if (rate === 0) {
+                    paused = true;
+                    pauseLogsBtn.hide();
+                    resumeLogsBtn.show();
+                } else {
+                    paused = false;
+                    resumeLogsBtn.hide();
+                    pauseLogsBtn.show();
+                }
+            });
+            
+            // Show timestamps change
+            showTimestamps.on('change', function() {
+                renderLogs();
+            });
+            
+            // Enable highlighting change
+            enableHighlighting.on('change', function() {
+                renderLogs();
+            });
+            
+            // Refresh system status
+            $('#refreshSystemStatusBtn').on('click', function(e) {
+                e.preventDefault();
+                loadSystemStatus();
+            });
+        });
+    </script>
 </body>
 </html>
 HTML
@@ -2631,185 +4525,392 @@ cat > "$WORKDIR/ui/templates/task_logs.html" <<'HTML'
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Infinite AI - Task Logs</title>
+    <title>Infinite AI - Task Details</title>
     <link rel="stylesheet" href="/static/css/bootstrap.min.css">
-    <link rel="stylesheet" href="/static/css/styles.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
     <style>
-        .log-list {
-            max-height: 300px;
-            overflow-y: auto;
-            border: 1px solid #dee2e6;
-            border-radius: 0.25rem;
-            padding: 0.5rem;
-            margin-bottom: 1rem;
-        }
-        .log-card {
-            margin-bottom: 0.5rem;
-            cursor: pointer;
-        }
-        .log-card:hover {
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             background-color: #f8f9fa;
         }
-        .log-content {
-            border: 1px solid #dee2e6;
-            border-radius: 0.25rem;
-            padding: 1rem;
-            min-height: 400px;
-            max-height: 600px;
+        
+        .navbar {
+            background-color: #343a40 !important;
+            box-shadow: 0 2px 4px rgba(0,0,0,.1);
+        }
+        
+        .terminal {
+            background-color: #212529;
+            color: #cccccc;
+            font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+            font-size: 0.9rem;
+            padding: 1.5rem;
+            border-radius: 0.5rem;
             overflow-y: auto;
             white-space: pre-wrap;
-            font-family: monospace;
-            background-color: #f8f9fa;
+            word-wrap: break-word;
+            height: calc(100vh - 250px);
+            position: relative;
         }
-        .badge-system-to-llm { background-color: #6c757d; }
-        .badge-llm-to-system { background-color: #28a745; }
-        .badge-system-shell-execution { background-color: #dc3545; }
-        .badge-system-shell-output { background-color: #fd7e14; }
-        .badge-user-to-system { background-color: #007bff; }
-        .badge-system-function-execution { background-color: #6610f2; }
-        .badge-system-task-complete { background-color: #20c997; }
-        .badge-system-error { background-color: #dc3545; }
-        .badge-system-selfupdate { background-color: #17a2b8; }
         
-        .timeline {
-            position: relative;
-            padding-left: 30px;
-        }
-        .timeline:before {
-            content: '';
-            position: absolute;
-            left: 10px;
+        .terminal-toolbar {
+            position: sticky;
             top: 0;
-            bottom: 0;
-            width: 2px;
-            background: #ddd;
-        }
-        .timeline-item {
-            position: relative;
-            margin-bottom: 20px;
-        }
-        .timeline-item:before {
-            content: '';
-            position: absolute;
-            left: -25px;
-            top: 0;
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            background: #007bff;
-        }
-        .timeline-item-user:before { background: #007bff; }
-        .timeline-item-llm:before { background: #28a745; }
-        .timeline-item-shell:before { background: #dc3545; }
-        .timeline-item-func:before { background: #6610f2; }
-        .timeline-item-complete:before { background: #20c997; }
-        .timeline-content {
-            padding: 10px;
-            border-radius: 5px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-            background: #fff;
-        }
-        .timeline-header {
+            background-color: #212529;
+            padding: 0.5rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            margin-bottom: 1rem;
+            z-index: 100;
             display: flex;
             justify-content: space-between;
-            padding-bottom: 5px;
-            border-bottom: 1px solid #eee;
-            margin-bottom: 10px;
+            align-items: center;
         }
-        .flex-container {
+        
+        .status-badge {
+            font-size: 0.85em;
+            padding: 0.4em 0.7em;
+            border-radius: 50rem;
+        }
+        
+        .status-running { background-color: #007bff; color: white; }
+        .status-completed { background-color: #28a745; color: white; }
+        .status-failed { background-color: #dc3545; color: white; }
+        .status-waiting { background-color: #ffc107; color: black; }
+        
+        .info-panel {
+            background-color: white;
+            border-radius: 0.5rem;
+            padding: 1.25rem;
+            margin-bottom: 1.25rem;
+            box-shadow: 0 0.125rem 0.25rem rgba(0,0,0,.075);
+        }
+        
+        .info-heading {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 1px solid #e9ecef;
+        }
+        
+        .info-list {
+            list-style-type: none;
+            padding-left: 0;
+            margin-bottom: 0;
+        }
+        
+        .info-list li {
             display: flex;
-            gap: 20px;
+            justify-content: space-between;
+            padding: 0.5rem 0;
+            border-bottom: 1px solid #f8f9fa;
         }
-        .sidebar {
-            flex: 0 0 350px;
-            height: calc(100vh - 120px);
+        
+        .info-list li:last-child {
+            border-bottom: none;
+        }
+        
+        .info-label {
+            font-weight: 500;
+            color: #495057;
+        }
+        
+        .info-value {
+            color: #212529;
+            text-align: right;
+            word-break: break-word;
+        }
+        
+        .step-indicator {
+            font-size: 0.85rem;
+            margin-top: 0.25rem;
+            color: #6c757d;
+        }
+        
+        .env-list {
+            max-height: 300px;
             overflow-y: auto;
         }
-        .main-content {
-            flex: 1;
-            height: calc(100vh - 120px);
-            overflow-y: auto;
+        
+        .task-logs-btn {
+            text-decoration: none !important;
+        }
+        
+        .task-logs-btn i {
+            margin-right: 0.5rem;
+        }
+        
+        .terminal-output {
+            line-height: 1.5;
+        }
+        
+        .command-line {
+            color: #50fa7b;
+            font-weight: bold;
+        }
+        
+        .error-output {
+            color: #ff5555;
+        }
+        
+        .success-output {
+            color: #50fa7b;
+        }
+        
+        .step-header {
+            color: #bd93f9;
+            font-weight: bold;
+            margin-top: 1rem;
+            margin-bottom: 0.5rem;
+            border-bottom: 1px solid #44475a;
+            padding-bottom: 0.25rem;
+        }
+        
+        .output-header {
+            color: #8be9fd;
+            font-weight: bold;
+            margin-top: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+        
+        .terminal-actions {
+            position: absolute;
+            top: 1rem;
+            right: 1rem;
+            display: flex;
+            gap: 0.5rem;
+            z-index: 10;
+        }
+        
+        .terminal-actions button {
+            background-color: rgba(255, 255, 255, 0.1);
+            border: none;
+            color: #ccc;
+            border-radius: 0.25rem;
+            padding: 0.25rem 0.5rem;
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .terminal-actions button:hover {
+            background-color: rgba(255, 255, 255, 0.2);
+        }
+        
+        .spinner-container {
+            display: inline-block;
+            margin-left: 0.5rem;
+        }
+        
+        #environmentDetails .command-available {
+            color: #50fa7b;
+        }
+        
+        #environmentDetails .command-unavailable {
+            color: #ff5555;
+        }
+        
+        .task-controls-row {
+            margin-bottom: 1rem;
+        }
+        
+        .terminal-mode-tabs {
+            margin-bottom: 1rem;
+        }
+        
+        .terminal-mode-tabs .nav-link {
+            padding: 0.25rem 0.75rem;
+            font-size: 0.85rem;
+        }
+        
+        .terminal-mode-tabs .nav-link.active {
+            font-weight: 600;
+        }
+        
+        .blinking-cursor::after {
+            content: '▋';
+            color: #ccc;
+            animation: blink 1s step-end infinite;
+        }
+        
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0; }
         }
     </style>
 </head>
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
-        <div class="container">
-            <a class="navbar-brand" href="/">Infinite AI Agent</a>
+        <div class="container-fluid">
+            <a class="navbar-brand" href="/">
+                <i class="bi bi-robot"></i> Infinite AI Agent
+            </a>
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
                 <span class="navbar-toggler-icon"></span>
             </button>
             <div class="collapse navbar-collapse" id="navbarNav">
                 <ul class="navbar-nav">
                     <li class="nav-item">
-                        <a class="nav-link" href="/">Home</a>
+                        <a class="nav-link" href="/"><i class="bi bi-house-fill"></i> Home</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="/logs">System Logs</a>
+                        <a class="nav-link" href="/logs"><i class="bi bi-journal-text"></i> System Logs</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="/history">Task History</a>
+                        <a class="nav-link" href="/history"><i class="bi bi-clock-history"></i> Task History</a>
                     </li>
                 </ul>
             </div>
         </div>
     </nav>
 
-    <div class="container-fluid mt-4">
-        <div class="d-flex justify-content-between align-items-center mb-4">
-            <h1>Task {{ task_id }} Logs</h1>
-            <div>
-                <a href="/task/{{ task_id }}" class="btn btn-primary">View Task</a>
-                <a href="/history" class="btn btn-secondary">Task History</a>
-            </div>
-        </div>
-
-        <div class="flex-container">
-            <div class="sidebar">
-                <div class="card">
-                    <div class="card-header d-flex justify-content-between align-items-center">
-                        <h5 class="mb-0">Log Files</h5>
-                        <button class="btn btn-sm btn-secondary" id="refreshLogs">Refresh</button>
+    <div class="container-fluid py-4">
+        <div class="row">
+            <!-- Left Column - Task Info -->
+            <div class="col-lg-3">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h2 class="mb-0">Task Details</h2>
+                </div>
+                
+                <div class="task-controls-row">
+                    <a href="/" class="btn btn-outline-secondary">
+                        <i class="bi bi-arrow-left"></i> Back to Dashboard
+                    </a>
+                    <a href="/task_logs/{{ task_id }}" class="btn btn-outline-primary ms-2 task-logs-btn">
+                        <i class="bi bi-file-text"></i> View Detailed Logs
+                    </a>
+                </div>
+                
+                <div class="info-panel">
+                    <div class="info-heading d-flex justify-content-between align-items-center">
+                        <span><i class="bi bi-info-circle"></i> Task Information</span>
+                        <span class="badge status-badge" id="taskStatusBadge">Loading...</span>
                     </div>
-                    <div class="card-body p-0">
-                        <div class="timeline p-3" id="logFiles">
-                            {% for log in logs %}
-                                {% set log_type_class = "timeline-item-" + log.type.split("_")[0] %}
-                                {% if "llm" in log.type %}
-                                    {% set log_type_class = "timeline-item-llm" %}
-                                {% elif "shell" in log.type %}
-                                    {% set log_type_class = "timeline-item-shell" %}
-                                {% elif "function" in log.type %}
-                                    {% set log_type_class = "timeline-item-func" %}
-                                {% elif "complete" in log.type %}
-                                    {% set log_type_class = "timeline-item-complete" %}
-                                {% endif %}
-                                
-                                <div class="timeline-item {{ log_type_class }}" data-log-path="{{ log.path }}">
-                                    <div class="timeline-content">
-                                        <div class="timeline-header">
-                                            <span class="badge badge-{{ log.type }}">{{ log.type.replace("_", " ").title() }}</span>
-                                            <small class="text-muted">{{ log.timestamp }}</small>
-                                        </div>
-                                        <span class="log-item-name">{{ log.filename }}</span>
+                    <ul class="info-list">
+                        <li>
+                            <span class="info-label">ID:</span>
+                            <span class="info-value" id="taskId">{{ task_id }}</span>
+                        </li>
+                        <li>
+                            <span class="info-label">Goal:</span>
+                            <span class="info-value" id="taskGoal">Loading...</span>
+                        </li>
+                        <li>
+                            <span class="info-label">Created:</span>
+                            <span class="info-value" id="taskCreated">Loading...</span>
+                        </li>
+                        <li>
+                            <span class="info-label">Duration:</span>
+                            <span class="info-value" id="taskDuration">Loading...</span>
+                        </li>
+                        <li>
+                            <span class="info-label">Current Step:</span>
+                            <span class="info-value">
+                                <span id="taskStep">Loading...</span>
+                                <div class="spinner-container" id="stepSpinner" style="display: none;">
+                                    <div class="spinner-border spinner-border-sm text-primary" role="status">
+                                        <span class="visually-hidden">Loading...</span>
                                     </div>
                                 </div>
-                            {% endfor %}
+                            </span>
+                        </li>
+                    </ul>
+                </div>
+                
+                <div class="info-panel">
+                    <div class="info-heading">
+                        <i class="bi bi-hdd-rack"></i> Environment
+                    </div>
+                    <div id="environmentDetails" class="env-list">
+                        <div class="text-center py-3">
+                            <div class="spinner-border text-primary" role="status">
+                                <span class="visually-hidden">Loading...</span>
+                            </div>
+                            <p class="mt-2 text-muted">Loading environment details...</p>
                         </div>
+                    </div>
+                </div>
+                
+                <div class="info-panel">
+                    <div class="info-heading">
+                        <i class="bi bi-tools"></i> Task Controls
+                    </div>
+                    <div class="d-grid gap-2">
+                        <button class="btn btn-outline-primary" id="refreshBtn">
+                            <i class="bi bi-arrow-clockwise"></i> Refresh Status
+                        </button>
+                        <button class="btn btn-outline-danger" id="cancelBtn" disabled>
+                            <i class="bi bi-x-circle"></i> Cancel Task
+                        </button>
                     </div>
                 </div>
             </div>
             
-            <div class="main-content">
-                <div class="card">
-                    <div class="card-header">
-                        <h5 class="mb-0">Log Content</h5>
-                        <span id="currentLogPath" class="text-muted small"></span>
+            <!-- Right Column - Terminal Output -->
+            <div class="col-lg-9">
+                <div class="card border-0 shadow-sm">
+                    <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center py-3">
+                        <h5 class="mb-0">
+                            <i class="bi bi-terminal"></i> Task Execution
+                            <span class="step-indicator" id="taskProgress">Step <span id="currentStep">0</span> of <span id="totalSteps">?</span></span>
+                        </h5>
+                        <div>
+                            <div class="form-check form-switch d-inline-block me-2">
+                                <input class="form-check-input" type="checkbox" id="autoScrollToggle" checked>
+                                <label class="form-check-label text-white" for="autoScrollToggle">Auto-scroll</label>
+                            </div>
+                            <button class="btn btn-sm btn-outline-light ms-2" id="scrollToBottomBtn">
+                                <i class="bi bi-arrow-down"></i>
+                            </button>
+                        </div>
                     </div>
-                    <div class="card-body">
-                        <div class="log-content" id="logContent">
-                            <div class="text-center text-muted">
-                                <p>Select a log file from the list to view its content</p>
+                    
+                    <div class="card-body p-0">
+                        <ul class="nav nav-tabs terminal-mode-tabs" id="outputModeTabs">
+                            <li class="nav-item">
+                                <a class="nav-link active" id="formatted-tab" data-bs-toggle="tab" href="#formatted">Formatted Output</a>
+                            </li>
+                            <li class="nav-item">
+                                <a class="nav-link" id="raw-tab" data-bs-toggle="tab" href="#raw">Raw Output</a>
+                            </li>
+                        </ul>
+                        
+                        <div class="tab-content">
+                            <div class="tab-pane fade show active" id="formatted">
+                                <div class="terminal">
+                                    <div class="terminal-actions">
+                                        <button id="copyBtn" title="Copy to clipboard">
+                                            <i class="bi bi-clipboard"></i> Copy
+                                        </button>
+                                        <button id="downloadBtn" title="Download output">
+                                            <i class="bi bi-download"></i> Download
+                                        </button>
+                                        <button id="clearBtn" title="Clear terminal">
+                                            <i class="bi bi-trash"></i> Clear
+                                        </button>
+                                    </div>
+                                    <div class="terminal-output" id="terminalOutput">
+                                        <div class="text-center py-5" id="loadingOutput">
+                                            <div class="spinner-border text-light" role="status">
+                                                <span class="visually-hidden">Loading...</span>
+                                            </div>
+                                            <p class="mt-3 text-muted">Loading task output...</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="tab-pane fade" id="raw">
+                                <div class="terminal">
+                                    <div class="terminal-actions">
+                                        <button id="rawCopyBtn" title="Copy raw output">
+                                            <i class="bi bi-clipboard"></i> Copy
+                                        </button>
+                                        <button id="rawDownloadBtn" title="Download raw output">
+                                            <i class="bi bi-download"></i> Download
+                                        </button>
+                                    </div>
+                                    <pre id="rawOutput" class="mb-0">Loading raw output...</pre>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -2818,45 +4919,508 @@ cat > "$WORKDIR/ui/templates/task_logs.html" <<'HTML'
         </div>
     </div>
 
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
     <script src="/static/js/bootstrap.bundle.min.js"></script>
     <script>
-        document.addEventListener('DOMContentLoaded', function() {
-            const logFiles = document.getElementById('logFiles');
-            const logContent = document.getElementById('logContent');
-            const currentLogPath = document.getElementById('currentLogPath');
-            const refreshLogsBtn = document.getElementById('refreshLogs');
+        $(document).ready(function() {
+            // Elements
+            const taskId = '{{ task_id }}';
+            const terminalOutput = $('#terminalOutput');
+            const rawOutput = $('#rawOutput');
+            const loadingOutput = $('#loadingOutput');
+            const taskStatusBadge = $('#taskStatusBadge');
+            const environmentDetails = $('#environmentDetails');
+            const copyBtn = $('#copyBtn');
+            const downloadBtn = $('#downloadBtn');
+            const clearBtn = $('#clearBtn');
+            const rawCopyBtn = $('#rawCopyBtn');
+            const rawDownloadBtn = $('#rawDownloadBtn');
+            const cancelBtn = $('#cancelBtn');
+            const refreshBtn = $('#refreshBtn');
+            const autoScrollToggle = $('#autoScrollToggle');
+            const scrollToBottomBtn = $('#scrollToBottomBtn');
+            const stepSpinner = $('#stepSpinner');
             
-            // Handle log file selection
-            logFiles.addEventListener('click', function(e) {
-                // Find closest log item
-                const logItem = e.target.closest('.timeline-item');
-                if (!logItem) return;
+            // Variables
+            let autoScroll = true;
+            let ws = null;
+            let rawOutputText = '';
+            let taskCompleted = false;
+            
+            // Format functions
+            function formatDuration(seconds) {
+                if (!seconds) return 'N/A';
                 
-                // Highlight selected log
-                document.querySelectorAll('.timeline-item').forEach(item => {
-                    item.classList.remove('active', 'bg-light');
+                const minutes = Math.floor(seconds / 60);
+                const remainingSeconds = seconds % 60;
+                
+                if (minutes === 0) {
+                    return `${remainingSeconds}s`;
+                } else {
+                    return `${minutes}m ${remainingSeconds}s`;
+                }
+            }
+            
+            function formatDate(dateString) {
+                if (!dateString) return 'N/A';
+                return new Date(dateString).toLocaleString();
+            }
+            
+            function getStatusBadgeClass(status) {
+                if (status.includes('running') || status.includes('starting')) {
+                    return 'status-running';
+                } else if (status.includes('completed')) {
+                    return 'status-completed';
+                } else if (status.includes('failed') || status.includes('error')) {
+                    return 'status-failed';
+                } else if (status.includes('waiting')) {
+                    return 'status-waiting';
+                } else {
+                    return 'bg-secondary';
+                }
+            }
+            
+            // Function to highlight terminal output
+            function highlightOutput(text) {
+                // Split the output by step headers
+                const parts = text.split(/^---\s+Step\s+\d+\s+\([A-Z]+\)\s+---$/gm);
+                const stepHeaders = text.match(/^---\s+Step\s+\d+\s+\([A-Z]+\)\s+---$/gm) || [];
+                
+                let formattedOutput = '';
+                
+                if (parts.length <= 1) {
+                    // No step headers found, just return the text with error/success highlighting
+                    return highlightErrorsAndSuccess(text);
+                }
+                
+                // Process each step
+                for (let i = 0; i < stepHeaders.length; i++) {
+                    const header = stepHeaders[i];
+                    const content = parts[i + 1] || '';
+                    
+                    // Add the step header
+                    formattedOutput += `<div class="step-header">${header}</div>`;
+                    
+                    // Split the step content into code and output
+                    const outputIndex = content.indexOf('--- Output ---');
+                    
+                    if (outputIndex !== -1) {
+                        const code = content.substring(0, outputIndex).trim();
+                        const output = content.substring(outputIndex + 14).trim();
+                        
+                        // Add the code section
+                        formattedOutput += `<div class="command-line">${escapeHtml(code)}</div>`;
+                        
+                        // Add the output header
+                        formattedOutput += `<div class="output-header">--- Output ---</div>`;
+                        
+                        // Add the highlighted output
+                        formattedOutput += highlightErrorsAndSuccess(output);
+                    } else {
+                        // If we can't split it, just add the whole content
+                        formattedOutput += highlightErrorsAndSuccess(content);
+                    }
+                }
+                
+                return formattedOutput;
+            }
+            
+            // Function to highlight errors and success messages
+            function highlightErrorsAndSuccess(text) {
+                let html = escapeHtml(text);
+                
+                // Highlight error messages
+                html = html.replace(/(?:^|\n)(error|exception|traceback|fail|\[erro?r?\]|❌)/gi, 
+                                   (match) => `<span class="error-output">${match}</span>`);
+                
+                // Highlight success messages
+                html = html.replace(/(?:^|\n)(success|completed|done|✅)/gi, 
+                                   (match) => `<span class="success-output">${match}</span>`);
+                
+                // Highlight commands with $
+                html = html.replace(/(?:^|\n)\$\s+(.*?)(?=\n|$)/g, 
+                                   (match, cmd) => `<span class="command-line">$ ${cmd}</span>`);
+                
+                return html;
+            }
+            
+            // Helper function to escape HTML
+            function escapeHtml(text) {
+                return text
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;')
+                    .replace(/'/g, '&#039;');
+            }
+            
+            // Function to add blinking cursor if task is still running
+            function addBlinkingCursor(element, isRunning) {
+                // Remove existing cursor
+                element.find('.blinking-cursor').remove();
+                
+                // Add new cursor if task is running
+                if (isRunning) {
+                    element.append('<span class="blinking-cursor"></span>');
+                }
+            }
+            
+            // Function to load task details
+            function loadTaskDetails() {
+                $.ajax({
+                    url: `/api/task/${taskId}`,
+                    method: 'GET',
+                    success: function(data) {
+                        if (data.error) {
+                            terminalOutput.html(`<div class="error-output">Error: ${data.error}</div>`);
+                            rawOutput.text(`Error: ${data.error}`);
+                            loadingOutput.hide();
+                            return;
+                        }
+                        
+                        // Update task info
+                        $('#taskGoal').text(data.goal || 'N/A');
+                        $('#taskStep').text(data.step || '0');
+                        $('#currentStep').text(data.step || '0');
+                        
+                        // Update task status badge
+                        const status = data.status || 'unknown';
+                        taskStatusBadge.text(status);
+                        taskStatusBadge.removeClass().addClass(`badge status-badge ${getStatusBadgeClass(status)}`);
+                        
+                        // Check if task is completed
+                        taskCompleted = status.includes('completed') || status.includes('failed');
+                        
+                        // Update cancel button
+                        cancelBtn.prop('disabled', taskCompleted);
+                        
+                        // Update created time
+                        if (data.created) {
+                            $('#taskCreated').text(formatDate(data.created));
+                        }
+                        
+                        // Update duration
+                        if (data.duration) {
+                            $('#taskDuration').text(formatDuration(data.duration));
+                        } else if (data.start_time) {
+                            const duration = Math.floor(Date.now() / 1000 - data.start_time);
+                            $('#taskDuration').text(formatDuration(duration) + ' (running)');
+                        }
+                        
+                        // Show step spinner if task is running
+                        if (!taskCompleted && status.includes('running')) {
+                            stepSpinner.show();
+                        } else {
+                            stepSpinner.hide();
+                        }
+                        
+                        // Update terminal output
+                        updateTerminalOutput(data.output || '');
+                        
+                        // Add blinking cursor if task is still running
+                        addBlinkingCursor(terminalOutput, !taskCompleted);
+                        
+                        // Update environment details
+                        updateEnvironmentDetails(data.environment);
+                    },
+                    error: function(xhr, status, error) {
+                        terminalOutput.html(`<div class="error-output">Error loading task: ${error}</div>`);
+                        rawOutput.text(`Error loading task: ${error}`);
+                        loadingOutput.hide();
+                    }
                 });
-                logItem.classList.add('active', 'bg-light');
+            }
+            
+            // Function to update terminal output
+            function updateTerminalOutput(output) {
+                if (!output) {
+                    return;
+                }
                 
-                // Get log path and fetch content
-                const logPath = logItem.dataset.logPath;
-                if (!logPath) return;
+                // Store raw output
+                rawOutputText = output;
+                rawOutput.text(output);
                 
-                fetch(`/logs/${logPath.split('/').slice(-2).join('/')}`)
-                    .then(response => response.text())
-                    .then(content => {
-                        logContent.innerHTML = content;
-                        currentLogPath.textContent = logPath.split('/').pop();
+                // Format and display terminal output
+                const highlightedOutput = highlightOutput(output);
+                terminalOutput.html(highlightedOutput);
+                loadingOutput.hide();
+                
+                // Scroll to bottom if auto-scroll is enabled
+                if (autoScroll) {
+                    const terminal = $('.terminal');
+                    terminal.scrollTop(terminal[0].scrollHeight);
+                }
+            }
+            
+            // Function to update environment details
+            function updateEnvironmentDetails(env) {
+                if (!env) {
+                    environmentDetails.html('<div class="text-muted">No environment information available</div>');
+                    return;
+                }
+                
+                let html = '<ul class="list-group list-group-flush">';
+                
+                // Process user and root status
+                html += `<li class="list-group-item d-flex justify-content-between align-items-center">
+                    <span>User</span>
+                    <span>${env.user || 'unknown'} ${env.is_root ? '(root)' : ''}</span>
+                </li>`;
+                
+                // OS info
+                if (env.os_info) {
+                    html += `<li class="list-group-item d-flex justify-content-between align-items-center">
+                        <span>OS</span>
+                        <span>${env.os_info}</span>
+                    </li>`;
+                }
+                
+                // Kernel
+                if (env.kernel) {
+                    html += `<li class="list-group-item d-flex justify-content-between align-items-center">
+                        <span>Kernel</span>
+                        <span>${env.kernel}</span>
+                    </li>`;
+                }
+                
+                // Working directory
+                if (env.working_dir) {
+                    html += `<li class="list-group-item d-flex justify-content-between align-items-center">
+                        <span>Working Directory</span>
+                        <span>${env.working_dir}</span>
+                    </li>`;
+                }
+                
+                // Docker status
+                if (env.docker_status) {
+                    html += `<li class="list-group-item d-flex justify-content-between align-items-center">
+                        <span>Docker</span>
+                        <span>${env.docker_status}${env.docker_running ? ` (${env.docker_running})` : ''}</span>
+                    </li>`;
+                }
+                
+                // Available commands
+                if (env.available_commands) {
+                    html += `<li class="list-group-item">
+                        <div>Available Commands</div>
+                        <div class="mt-1">`;
+                    
+                    if (typeof env.available_commands === 'string') {
+                        // Handle string format
+                        const commands = env.available_commands.split(/\s+/).filter(Boolean);
+                        commands.forEach(cmd => {
+                            html += `<span class="badge bg-secondary me-1">${cmd}</span>`;
+                        });
+                    } else if (typeof env.available_commands === 'object') {
+                        // Handle object format
+                        for (const [cmd, status] of Object.entries(env.available_commands)) {
+                            const isAvailable = status === 'available';
+                            html += `<span class="badge ${isAvailable ? 'bg-success' : 'bg-danger'} me-1">${cmd}</span>`;
+                        }
+                    }
+                    
+                    html += `</div>
+                    </li>`;
+                }
+                
+                // Memory info
+                if (env.memory) {
+                    html += `<li class="list-group-item d-flex justify-content-between align-items-center">
+                        <span>Memory</span>
+                        <span>${env.memory}</span>
+                    </li>`;
+                }
+                
+                // Free disk space
+                if (env.free_disk_space) {
+                    html += `<li class="list-group-item d-flex justify-content-between align-items-center">
+                        <span>Free Disk Space</span>
+                        <span>${env.free_disk_space}</span>
+                    </li>`;
+                }
+                
+                html += '</ul>';
+                environmentDetails.html(html);
+            }
+            
+            // Initialize WebSocket connection
+            function initWebSocket() {
+                ws = new WebSocket(`ws://${window.location.host}/ws`);
+                
+                ws.onopen = function() {
+                    console.log('WebSocket connected');
+                };
+                
+                ws.onmessage = function(event) {
+                    const data = JSON.parse(event.data);
+                    
+                    if (data.type === 'task_update' && data.id === taskId) {
+                        // Update terminal output
+                        updateTerminalOutput(data.output);
+                        
+                        // Update task status and step
+                        taskStatusBadge.text(data.status);
+                        taskStatusBadge.removeClass().addClass(`badge status-badge ${getStatusBadgeClass(data.status)}`);
+                        
+                        if (data.step) {
+                            $('#taskStep').text(data.step);
+                            $('#currentStep').text(data.step);
+                            stepSpinner.show();
+                        }
+                    } else if (data.type === 'task_complete' && data.id === taskId) {
+                        // Update terminal output
+                        updateTerminalOutput(data.output);
+                        
+                        // Update task status
+                        taskStatusBadge.text(data.status);
+                        taskStatusBadge.removeClass().addClass(`badge status-badge ${getStatusBadgeClass(data.status)}`);
+                        
+                        // Update task completion
+                        taskCompleted = true;
+                        cancelBtn.prop('disabled', true);
+                        stepSpinner.hide();
+                        
+                        // Remove blinking cursor
+                        addBlinkingCursor(terminalOutput, false);
+                        
+                        // Reload task details to get final information
+                        loadTaskDetails();
+                    }
+                };
+                
+                ws.onclose = function() {
+                    console.log('WebSocket disconnected');
+                    // Try to reconnect after a delay if the task is not completed
+                    if (!taskCompleted) {
+                        setTimeout(initWebSocket, 5000);
+                    }
+                };
+                
+                ws.onerror = function(error) {
+                    console.error('WebSocket error:', error);
+                };
+            }
+            
+            // Copy terminal output
+            copyBtn.on('click', function() {
+                const text = terminalOutput.text();
+                navigator.clipboard.writeText(text)
+                    .then(() => {
+                        const originalText = copyBtn.html();
+                        copyBtn.html('<i class="bi bi-check"></i> Copied!');
+                        setTimeout(() => {
+                            copyBtn.html(originalText);
+                        }, 2000);
                     })
-                    .catch(error => {
-                        logContent.innerHTML = `<div class="alert alert-danger">Error loading log: ${error}</div>`;
+                    .catch(err => {
+                        alert('Failed to copy: ' + err);
                     });
             });
             
-            // Refresh logs
-            refreshLogsBtn.addEventListener('click', function() {
-                location.reload();
+            // Copy raw output
+            rawCopyBtn.on('click', function() {
+                navigator.clipboard.writeText(rawOutputText)
+                    .then(() => {
+                        const originalText = rawCopyBtn.html();
+                        rawCopyBtn.html('<i class="bi bi-check"></i> Copied!');
+                        setTimeout(() => {
+                            rawCopyBtn.html(originalText);
+                        }, 2000);
+                    })
+                    .catch(err => {
+                        alert('Failed to copy: ' + err);
+                    });
             });
+            
+            // Download terminal output
+            downloadBtn.on('click', function() {
+                const text = terminalOutput.text();
+                const blob = new Blob([text], { type: 'text/plain' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `task_${taskId}_output.txt`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            });
+            
+            // Download raw output
+            rawDownloadBtn.on('click', function() {
+                const blob = new Blob([rawOutputText], { type: 'text/plain' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `task_${taskId}_raw_output.txt`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            });
+            
+            // Clear terminal
+            clearBtn.on('click', function() {
+                if (confirm('Are you sure you want to clear the terminal? This will only clear the view, not the actual task output.')) {
+                    terminalOutput.empty();
+                }
+            });
+            
+            // Cancel task
+            cancelBtn.on('click', function() {
+                if (confirm('Are you sure you want to cancel this task?')) {
+                    $.ajax({
+                        url: `/api/task/${taskId}/cancel`,
+                        method: 'POST',
+                        success: function(data) {
+                            if (data.success) {
+                                alert('Task cancelled successfully');
+                                loadTaskDetails();
+                            } else {
+                                alert(`Failed to cancel task: ${data.error}`);
+                            }
+                        },
+                        error: function(xhr, status, error) {
+                            alert(`Error: ${error}`);
+                        }
+                    });
+                }
+            });
+            
+            // Refresh button
+            refreshBtn.on('click', function() {
+                loadTaskDetails();
+            });
+            
+            // Auto-scroll toggle
+            autoScrollToggle.on('change', function() {
+                autoScroll = $(this).is(':checked');
+                
+                if (autoScroll) {
+                    const terminal = $('.terminal');
+                    terminal.scrollTop(terminal[0].scrollHeight);
+                }
+            });
+            
+            // Scroll to bottom button
+            scrollToBottomBtn.on('click', function() {
+                const terminal = $('.terminal');
+                terminal.scrollTop(terminal[0].scrollHeight);
+            });
+            
+            // Initialize
+            loadTaskDetails();
+            initWebSocket();
+            
+            // Set up auto-refresh
+            const refreshInterval = setInterval(function() {
+                if (!taskCompleted) {
+                    loadTaskDetails();
+                } else {
+                    clearInterval(refreshInterval);
+                }
+            }, 10000);  // Refresh every 10 seconds if task is not completed
         });
     </script>
 </body>
@@ -2873,133 +5437,391 @@ cat > "$WORKDIR/ui/templates/task.html" <<'HTML'
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Infinite AI - Task Details</title>
     <link rel="stylesheet" href="/static/css/bootstrap.min.css">
-    <link rel="stylesheet" href="/static/css/styles.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
     <style>
-        .terminal {
-            background-color: #000;
-            color: #00ff00;
-            font-family: monospace;
-            padding: 1rem;
-            border-radius: 5px;
-            white-space: pre-wrap;
-            overflow-y: auto;
-            height: 550px;
-        }
-        #output {
-            margin: 0;
-            padding: 0;
-        }
-        .task-info {
-            font-size: 1.2em;
-            margin-bottom: 20px;
-        }
-        .task-status {
-            font-weight: bold;
-            margin-left: 10px;
-        }
-        .status-running {
-            color: #007bff;
-        }
-        .status-completed {
-            color: #28a745;
-        }
-        .status-failed {
-            color: #dc3545;
-        }
-        .info-panel {
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             background-color: #f8f9fa;
-            border-radius: 5px;
-            padding: 15px;
-            margin-bottom: 20px;
         }
-        .log-nav-btn {
-            margin-right: 15px;
+        
+        .navbar {
+            background-color: #343a40 !important;
+            box-shadow: 0 2px 4px rgba(0,0,0,.1);
+        }
+        
+        .terminal {
+            background-color: #212529;
+            color: #cccccc;
+            font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+            font-size: 0.9rem;
+            padding: 1.5rem;
+            border-radius: 0.5rem;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            height: calc(100vh - 250px);
+            position: relative;
+        }
+        
+        .terminal-toolbar {
+            position: sticky;
+            top: 0;
+            background-color: #212529;
+            padding: 0.5rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            margin-bottom: 1rem;
+            z-index: 100;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .status-badge {
+            font-size: 0.85em;
+            padding: 0.4em 0.7em;
+            border-radius: 50rem;
+        }
+        
+        .status-running { background-color: #007bff; color: white; }
+        .status-completed { background-color: #28a745; color: white; }
+        .status-failed { background-color: #dc3545; color: white; }
+        .status-waiting { background-color: #ffc107; color: black; }
+        
+        .info-panel {
+            background-color: white;
+            border-radius: 0.5rem;
+            padding: 1.25rem;
+            margin-bottom: 1.25rem;
+            box-shadow: 0 0.125rem 0.25rem rgba(0,0,0,.075);
+        }
+        
+        .info-heading {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 1px solid #e9ecef;
+        }
+        
+        .info-list {
+            list-style-type: none;
+            padding-left: 0;
+            margin-bottom: 0;
+        }
+        
+        .info-list li {
+            display: flex;
+            justify-content: space-between;
+            padding: 0.5rem 0;
+            border-bottom: 1px solid #f8f9fa;
+        }
+        
+        .info-list li:last-child {
+            border-bottom: none;
+        }
+        
+        .info-label {
+            font-weight: 500;
+            color: #495057;
+        }
+        
+        .info-value {
+            color: #212529;
+            text-align: right;
+            word-break: break-word;
+        }
+        
+        .step-indicator {
+            font-size: 0.85rem;
+            margin-top: 0.25rem;
+            color: #6c757d;
+        }
+        
+        .env-list {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        
+        .task-logs-btn {
+            text-decoration: none !important;
+        }
+        
+        .task-logs-btn i {
+            margin-right: 0.5rem;
+        }
+        
+        .terminal-output {
+            line-height: 1.5;
+        }
+        
+        .command-line {
+            color: #50fa7b;
+            font-weight: bold;
+        }
+        
+        .error-output {
+            color: #ff5555;
+        }
+        
+        .success-output {
+            color: #50fa7b;
+        }
+        
+        .step-header {
+            color: #bd93f9;
+            font-weight: bold;
+            margin-top: 1rem;
+            margin-bottom: 0.5rem;
+            border-bottom: 1px solid #44475a;
+            padding-bottom: 0.25rem;
+        }
+        
+        .output-header {
+            color: #8be9fd;
+            font-weight: bold;
+            margin-top: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+        
+        .terminal-actions {
+            position: absolute;
+            top: 1rem;
+            right: 1rem;
+            display: flex;
+            gap: 0.5rem;
+            z-index: 10;
+        }
+        
+        .terminal-actions button {
+            background-color: rgba(255, 255, 255, 0.1);
+            border: none;
+            color: #ccc;
+            border-radius: 0.25rem;
+            padding: 0.25rem 0.5rem;
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .terminal-actions button:hover {
+            background-color: rgba(255, 255, 255, 0.2);
+        }
+        
+        .spinner-container {
+            display: inline-block;
+            margin-left: 0.5rem;
+        }
+        
+        #environmentDetails .command-available {
+            color: #50fa7b;
+        }
+        
+        #environmentDetails .command-unavailable {
+            color: #ff5555;
+        }
+        
+        .task-controls-row {
+            margin-bottom: 1rem;
+        }
+        
+        .terminal-mode-tabs {
+            margin-bottom: 1rem;
+        }
+        
+        .terminal-mode-tabs .nav-link {
+            padding: 0.25rem 0.75rem;
+            font-size: 0.85rem;
+        }
+        
+        .terminal-mode-tabs .nav-link.active {
+            font-weight: 600;
+        }
+        
+        .blinking-cursor::after {
+            content: '▋';
+            color: #ccc;
+            animation: blink 1s step-end infinite;
+        }
+        
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0; }
         }
     </style>
 </head>
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
-        <div class="container">
-            <a class="navbar-brand" href="/">Infinite AI Agent</a>
+        <div class="container-fluid">
+            <a class="navbar-brand" href="/">
+                <i class="bi bi-robot"></i> Infinite AI Agent
+            </a>
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
                 <span class="navbar-toggler-icon"></span>
             </button>
             <div class="collapse navbar-collapse" id="navbarNav">
                 <ul class="navbar-nav">
                     <li class="nav-item">
-                        <a class="nav-link" href="/">Home</a>
+                        <a class="nav-link" href="/"><i class="bi bi-house-fill"></i> Home</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="/logs">System Logs</a>
+                        <a class="nav-link" href="/logs"><i class="bi bi-journal-text"></i> System Logs</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="/history">Task History</a>
+                        <a class="nav-link" href="/history"><i class="bi bi-clock-history"></i> Task History</a>
                     </li>
                 </ul>
             </div>
         </div>
     </nav>
 
-    <div class="container-fluid mt-4">
-        <div class="d-flex justify-content-between align-items-center mb-3">
-            <h1>Task Details</h1>
-            <div>
-                <a href="/task_logs/{{ task_id }}" class="btn btn-info log-nav-btn">
-                    <i class="fas fa-file-alt"></i> View Detailed Logs
-                </a>
-                <a href="/" class="btn btn-secondary">Back to Home</a>
-            </div>
-        </div>
-
+    <div class="container-fluid py-4">
         <div class="row">
+            <!-- Left Column - Task Info -->
             <div class="col-lg-3">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h2 class="mb-0">Task Details</h2>
+                </div>
+                
+                <div class="task-controls-row">
+                    <a href="/" class="btn btn-outline-secondary">
+                        <i class="bi bi-arrow-left"></i> Back to Dashboard
+                    </a>
+                    <a href="/task_logs/{{ task_id }}" class="btn btn-outline-primary ms-2 task-logs-btn">
+                        <i class="bi bi-file-text"></i> View Detailed Logs
+                    </a>
+                </div>
+                
                 <div class="info-panel">
-                    <h4>Task Information</h4>
-                    <div class="task-info">
-                        <div>
-                            <strong>ID:</strong> <span id="taskId">{{ task_id }}</span>
-                        </div>
-                        <div>
-                            <strong>Goal:</strong> <span id="taskGoal">Loading...</span>
-                        </div>
-                        <div>
-                            <strong>Status:</strong> 
-                            <span id="taskStatus" class="task-status">Loading...</span>
-                        </div>
-                        <div>
-                            <strong>Created:</strong> <span id="taskCreated">Loading...</span>
-                        </div>
-                        <div>
-                            <strong>Duration:</strong> <span id="taskDuration">Loading...</span>
-                        </div>
-                        <div>
-                            <strong>Current Step:</strong> <span id="taskStep">Loading...</span>
+                    <div class="info-heading d-flex justify-content-between align-items-center">
+                        <span><i class="bi bi-info-circle"></i> Task Information</span>
+                        <span class="badge status-badge" id="taskStatusBadge">Loading...</span>
+                    </div>
+                    <ul class="info-list">
+                        <li>
+                            <span class="info-label">ID:</span>
+                            <span class="info-value" id="taskId">{{ task_id }}</span>
+                        </li>
+                        <li>
+                            <span class="info-label">Goal:</span>
+                            <span class="info-value" id="taskGoal">Loading...</span>
+                        </li>
+                        <li>
+                            <span class="info-label">Created:</span>
+                            <span class="info-value" id="taskCreated">Loading...</span>
+                        </li>
+                        <li>
+                            <span class="info-label">Duration:</span>
+                            <span class="info-value" id="taskDuration">Loading...</span>
+                        </li>
+                        <li>
+                            <span class="info-label">Current Step:</span>
+                            <span class="info-value">
+                                <span id="taskStep">Loading...</span>
+                                <div class="spinner-container" id="stepSpinner" style="display: none;">
+                                    <div class="spinner-border spinner-border-sm text-primary" role="status">
+                                        <span class="visually-hidden">Loading...</span>
+                                    </div>
+                                </div>
+                            </span>
+                        </li>
+                    </ul>
+                </div>
+                
+                <div class="info-panel">
+                    <div class="info-heading">
+                        <i class="bi bi-hdd-rack"></i> Environment
+                    </div>
+                    <div id="environmentDetails" class="env-list">
+                        <div class="text-center py-3">
+                            <div class="spinner-border text-primary" role="status">
+                                <span class="visually-hidden">Loading...</span>
+                            </div>
+                            <p class="mt-2 text-muted">Loading environment details...</p>
                         </div>
                     </div>
-
-                    <h4>Environment</h4>
-                    <div id="environment" class="mb-3">
-                        <div>Loading environment info...</div>
+                </div>
+                
+                <div class="info-panel">
+                    <div class="info-heading">
+                        <i class="bi bi-tools"></i> Task Controls
                     </div>
-
                     <div class="d-grid gap-2">
-                        <button class="btn btn-warning" id="cancelBtn" disabled>Cancel Task</button>
-                        <button class="btn btn-primary" id="refreshBtn">Refresh Status</button>
+                        <button class="btn btn-outline-primary" id="refreshBtn">
+                            <i class="bi bi-arrow-clockwise"></i> Refresh Status
+                        </button>
+                        <button class="btn btn-outline-danger" id="cancelBtn" disabled>
+                            <i class="bi bi-x-circle"></i> Cancel Task
+                        </button>
                     </div>
                 </div>
             </div>
+            
+            <!-- Right Column - Terminal Output -->
             <div class="col-lg-9">
-                <div class="card">
-                    <div class="card-header d-flex justify-content-between align-items-center">
-                        <h5 class="mb-0">Task Output</h5>
+                <div class="card border-0 shadow-sm">
+                    <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center py-3">
+                        <h5 class="mb-0">
+                            <i class="bi bi-terminal"></i> Task Execution
+                            <span class="step-indicator" id="taskProgress">Step <span id="currentStep">0</span> of <span id="totalSteps">?</span></span>
+                        </h5>
                         <div>
-                            <button class="btn btn-sm btn-secondary" id="clearBtn">Clear</button>
-                            <button class="btn btn-sm btn-secondary" id="copyBtn">Copy</button>
+                            <div class="form-check form-switch d-inline-block me-2">
+                                <input class="form-check-input" type="checkbox" id="autoScrollToggle" checked>
+                                <label class="form-check-label text-white" for="autoScrollToggle">Auto-scroll</label>
+                            </div>
+                            <button class="btn btn-sm btn-outline-light ms-2" id="scrollToBottomBtn">
+                                <i class="bi bi-arrow-down"></i>
+                            </button>
                         </div>
                     </div>
+                    
                     <div class="card-body p-0">
-                        <div class="terminal">
-                            <pre id="output">Loading task output...</pre>
+                        <ul class="nav nav-tabs terminal-mode-tabs" id="outputModeTabs">
+                            <li class="nav-item">
+                                <a class="nav-link active" id="formatted-tab" data-bs-toggle="tab" href="#formatted">Formatted Output</a>
+                            </li>
+                            <li class="nav-item">
+                                <a class="nav-link" id="raw-tab" data-bs-toggle="tab" href="#raw">Raw Output</a>
+                            </li>
+                        </ul>
+                        
+                        <div class="tab-content">
+                            <div class="tab-pane fade show active" id="formatted">
+                                <div class="terminal">
+                                    <div class="terminal-actions">
+                                        <button id="copyBtn" title="Copy to clipboard">
+                                            <i class="bi bi-clipboard"></i> Copy
+                                        </button>
+                                        <button id="downloadBtn" title="Download output">
+                                            <i class="bi bi-download"></i> Download
+                                        </button>
+                                        <button id="clearBtn" title="Clear terminal">
+                                            <i class="bi bi-trash"></i> Clear
+                                        </button>
+                                    </div>
+                                    <div class="terminal-output" id="terminalOutput">
+                                        <div class="text-center py-5" id="loadingOutput">
+                                            <div class="spinner-border text-light" role="status">
+                                                <span class="visually-hidden">Loading...</span>
+                                            </div>
+                                            <p class="mt-3 text-muted">Loading task output...</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="tab-pane fade" id="raw">
+                                <div class="terminal">
+                                    <div class="terminal-actions">
+                                        <button id="rawCopyBtn" title="Copy raw output">
+                                            <i class="bi bi-clipboard"></i> Copy
+                                        </button>
+                                        <button id="rawDownloadBtn" title="Download raw output">
+                                            <i class="bi bi-download"></i> Download
+                                        </button>
+                                    </div>
+                                    <pre id="rawOutput" class="mb-0">Loading raw output...</pre>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -3007,25 +5829,331 @@ cat > "$WORKDIR/ui/templates/task.html" <<'HTML'
         </div>
     </div>
 
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
     <script src="/static/js/bootstrap.bundle.min.js"></script>
     <script>
-        document.addEventListener('DOMContentLoaded', function() {
-            const taskId = document.getElementById('taskId').textContent;
-            const taskGoal = document.getElementById('taskGoal');
-            const taskStatus = document.getElementById('taskStatus');
-            const taskCreated = document.getElementById('taskCreated');
-            const taskDuration = document.getElementById('taskDuration');
-            const taskStep = document.getElementById('taskStep');
-            const output = document.getElementById('output');
-            const environment = document.getElementById('environment');
-            const refreshBtn = document.getElementById('refreshBtn');
-            const cancelBtn = document.getElementById('cancelBtn');
-            const clearBtn = document.getElementById('clearBtn');
-            const copyBtn = document.getElementById('copyBtn');
+        $(document).ready(function() {
+            // Elements
+            const taskId = '{{ task_id }}';
+            const terminalOutput = $('#terminalOutput');
+            const rawOutput = $('#rawOutput');
+            const loadingOutput = $('#loadingOutput');
+            const taskStatusBadge = $('#taskStatusBadge');
+            const environmentDetails = $('#environmentDetails');
+            const copyBtn = $('#copyBtn');
+            const downloadBtn = $('#downloadBtn');
+            const clearBtn = $('#clearBtn');
+            const rawCopyBtn = $('#rawCopyBtn');
+            const rawDownloadBtn = $('#rawDownloadBtn');
+            const cancelBtn = $('#cancelBtn');
+            const refreshBtn = $('#refreshBtn');
+            const autoScrollToggle = $('#autoScrollToggle');
+            const scrollToBottomBtn = $('#scrollToBottomBtn');
+            const stepSpinner = $('#stepSpinner');
             
+            // Variables
+            let autoScroll = true;
             let ws = null;
-            let isCompleted = false;
-
+            let rawOutputText = '';
+            let taskCompleted = false;
+            
+            // Format functions
+            function formatDuration(seconds) {
+                if (!seconds) return 'N/A';
+                
+                const minutes = Math.floor(seconds / 60);
+                const remainingSeconds = seconds % 60;
+                
+                if (minutes === 0) {
+                    return `${remainingSeconds}s`;
+                } else {
+                    return `${minutes}m ${remainingSeconds}s`;
+                }
+            }
+            
+            function formatDate(dateString) {
+                if (!dateString) return 'N/A';
+                return new Date(dateString).toLocaleString();
+            }
+            
+            function getStatusBadgeClass(status) {
+                if (status.includes('running') || status.includes('starting')) {
+                    return 'status-running';
+                } else if (status.includes('completed')) {
+                    return 'status-completed';
+                } else if (status.includes('failed') || status.includes('error')) {
+                    return 'status-failed';
+                } else if (status.includes('waiting')) {
+                    return 'status-waiting';
+                } else {
+                    return 'bg-secondary';
+                }
+            }
+            
+            // Function to highlight terminal output
+            function highlightOutput(text) {
+                // Split the output by step headers
+                const parts = text.split(/^---\s+Step\s+\d+\s+\([A-Z]+\)\s+---$/gm);
+                const stepHeaders = text.match(/^---\s+Step\s+\d+\s+\([A-Z]+\)\s+---$/gm) || [];
+                
+                let formattedOutput = '';
+                
+                if (parts.length <= 1) {
+                    // No step headers found, just return the text with error/success highlighting
+                    return highlightErrorsAndSuccess(text);
+                }
+                
+                // Process each step
+                for (let i = 0; i < stepHeaders.length; i++) {
+                    const header = stepHeaders[i];
+                    const content = parts[i + 1] || '';
+                    
+                    // Add the step header
+                    formattedOutput += `<div class="step-header">${header}</div>`;
+                    
+                    // Split the step content into code and output
+                    const outputIndex = content.indexOf('--- Output ---');
+                    
+                    if (outputIndex !== -1) {
+                        const code = content.substring(0, outputIndex).trim();
+                        const output = content.substring(outputIndex + 14).trim();
+                        
+                        // Add the code section
+                        formattedOutput += `<div class="command-line">${escapeHtml(code)}</div>`;
+                        
+                        // Add the output header
+                        formattedOutput += `<div class="output-header">--- Output ---</div>`;
+                        
+                        // Add the highlighted output
+                        formattedOutput += highlightErrorsAndSuccess(output);
+                    } else {
+                        // If we can't split it, just add the whole content
+                        formattedOutput += highlightErrorsAndSuccess(content);
+                    }
+                }
+                
+                return formattedOutput;
+            }
+            
+            // Function to highlight errors and success messages
+            function highlightErrorsAndSuccess(text) {
+                let html = escapeHtml(text);
+                
+                // Highlight error messages
+                html = html.replace(/(?:^|\n)(error|exception|traceback|fail|\[erro?r?\]|❌)/gi, 
+                                   (match) => `<span class="error-output">${match}</span>`);
+                
+                // Highlight success messages
+                html = html.replace(/(?:^|\n)(success|completed|done|✅)/gi, 
+                                   (match) => `<span class="success-output">${match}</span>`);
+                
+                // Highlight commands with $
+                html = html.replace(/(?:^|\n)\$\s+(.*?)(?=\n|$)/g, 
+                                   (match, cmd) => `<span class="command-line">$ ${cmd}</span>`);
+                
+                return html;
+            }
+            
+            // Helper function to escape HTML
+            function escapeHtml(text) {
+                return text
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;')
+                    .replace(/'/g, '&#039;');
+            }
+            
+            // Function to add blinking cursor if task is still running
+            function addBlinkingCursor(element, isRunning) {
+                // Remove existing cursor
+                element.find('.blinking-cursor').remove();
+                
+                // Add new cursor if task is running
+                if (isRunning) {
+                    element.append('<span class="blinking-cursor"></span>');
+                }
+            }
+            
+            // Function to load task details
+            function loadTaskDetails() {
+                $.ajax({
+                    url: `/api/task/${taskId}`,
+                    method: 'GET',
+                    success: function(data) {
+                        if (data.error) {
+                            terminalOutput.html(`<div class="error-output">Error: ${data.error}</div>`);
+                            rawOutput.text(`Error: ${data.error}`);
+                            loadingOutput.hide();
+                            return;
+                        }
+                        
+                        // Update task info
+                        $('#taskGoal').text(data.goal || 'N/A');
+                        $('#taskStep').text(data.step || '0');
+                        $('#currentStep').text(data.step || '0');
+                        
+                        // Update task status badge
+                        const status = data.status || 'unknown';
+                        taskStatusBadge.text(status);
+                        taskStatusBadge.removeClass().addClass(`badge status-badge ${getStatusBadgeClass(status)}`);
+                        
+                        // Check if task is completed
+                        taskCompleted = status.includes('completed') || status.includes('failed');
+                        
+                        // Update cancel button
+                        cancelBtn.prop('disabled', taskCompleted);
+                        
+                        // Update created time
+                        if (data.created) {
+                            $('#taskCreated').text(formatDate(data.created));
+                        }
+                        
+                        // Update duration
+                        if (data.duration) {
+                            $('#taskDuration').text(formatDuration(data.duration));
+                        } else if (data.start_time) {
+                            const duration = Math.floor(Date.now() / 1000 - data.start_time);
+                            $('#taskDuration').text(formatDuration(duration) + ' (running)');
+                        }
+                        
+                        // Show step spinner if task is running
+                        if (!taskCompleted && status.includes('running')) {
+                            stepSpinner.show();
+                        } else {
+                            stepSpinner.hide();
+                        }
+                        
+                        // Update terminal output
+                        updateTerminalOutput(data.output || '');
+                        
+                        // Add blinking cursor if task is still running
+                        addBlinkingCursor(terminalOutput, !taskCompleted);
+                        
+                        // Update environment details
+                        updateEnvironmentDetails(data.environment);
+                    },
+                    error: function(xhr, status, error) {
+                        terminalOutput.html(`<div class="error-output">Error loading task: ${error}</div>`);
+                        rawOutput.text(`Error loading task: ${error}`);
+                        loadingOutput.hide();
+                    }
+                });
+            }
+            
+            // Function to update terminal output
+            function updateTerminalOutput(output) {
+                if (!output) {
+                    return;
+                }
+                
+                // Store raw output
+                rawOutputText = output;
+                rawOutput.text(output);
+                
+                // Format and display terminal output
+                const highlightedOutput = highlightOutput(output);
+                terminalOutput.html(highlightedOutput);
+                loadingOutput.hide();
+                
+                // Scroll to bottom if auto-scroll is enabled
+                if (autoScroll) {
+                    const terminal = $('.terminal');
+                    terminal.scrollTop(terminal[0].scrollHeight);
+                }
+            }
+            
+            // Function to update environment details
+            function updateEnvironmentDetails(env) {
+                if (!env) {
+                    environmentDetails.html('<div class="text-muted">No environment information available</div>');
+                    return;
+                }
+                
+                let html = '<ul class="list-group list-group-flush">';
+                
+                // Process user and root status
+                html += `<li class="list-group-item d-flex justify-content-between align-items-center">
+                    <span>User</span>
+                    <span>${env.user || 'unknown'} ${env.is_root ? '(root)' : ''}</span>
+                </li>`;
+                
+                // OS info
+                if (env.os_info) {
+                    html += `<li class="list-group-item d-flex justify-content-between align-items-center">
+                        <span>OS</span>
+                        <span>${env.os_info}</span>
+                    </li>`;
+                }
+                
+                // Kernel
+                if (env.kernel) {
+                    html += `<li class="list-group-item d-flex justify-content-between align-items-center">
+                        <span>Kernel</span>
+                        <span>${env.kernel}</span>
+                    </li>`;
+                }
+                
+                // Working directory
+                if (env.working_dir) {
+                    html += `<li class="list-group-item d-flex justify-content-between align-items-center">
+                        <span>Working Directory</span>
+                        <span>${env.working_dir}</span>
+                    </li>`;
+                }
+                
+                // Docker status
+                if (env.docker_status) {
+                    html += `<li class="list-group-item d-flex justify-content-between align-items-center">
+                        <span>Docker</span>
+                        <span>${env.docker_status}${env.docker_running ? ` (${env.docker_running})` : ''}</span>
+                    </li>`;
+                }
+                
+                // Available commands
+                if (env.available_commands) {
+                    html += `<li class="list-group-item">
+                        <div>Available Commands</div>
+                        <div class="mt-1">`;
+                    
+                    if (typeof env.available_commands === 'string') {
+                        // Handle string format
+                        const commands = env.available_commands.split(/\s+/).filter(Boolean);
+                        commands.forEach(cmd => {
+                            html += `<span class="badge bg-secondary me-1">${cmd}</span>`;
+                        });
+                    } else if (typeof env.available_commands === 'object') {
+                        // Handle object format
+                        for (const [cmd, status] of Object.entries(env.available_commands)) {
+                            const isAvailable = status === 'available';
+                            html += `<span class="badge ${isAvailable ? 'bg-success' : 'bg-danger'} me-1">${cmd}</span>`;
+                        }
+                    }
+                    
+                    html += `</div>
+                    </li>`;
+                }
+                
+                // Memory info
+                if (env.memory) {
+                    html += `<li class="list-group-item d-flex justify-content-between align-items-center">
+                        <span>Memory</span>
+                        <span>${env.memory}</span>
+                    </li>`;
+                }
+                
+                // Free disk space
+                if (env.free_disk_space) {
+                    html += `<li class="list-group-item d-flex justify-content-between align-items-center">
+                        <span>Free Disk Space</span>
+                        <span>${env.free_disk_space}</span>
+                    </li>`;
+                }
+                
+                html += '</ul>';
+                environmentDetails.html(html);
+            }
+            
             // Initialize WebSocket connection
             function initWebSocket() {
                 ws = new WebSocket(`ws://${window.location.host}/ws`);
@@ -3038,29 +6166,43 @@ cat > "$WORKDIR/ui/templates/task.html" <<'HTML'
                     const data = JSON.parse(event.data);
                     
                     if (data.type === 'task_update' && data.id === taskId) {
-                        updateTaskInfo(data);
-                    } else if (data.type === 'task_complete' && data.id === taskId) {
-                        updateTaskInfo(data);
-                        isCompleted = true;
-                        cancelBtn.disabled = true;
+                        // Update terminal output
+                        updateTerminalOutput(data.output);
                         
-                        // Update UI to show completed status
-                        taskStatus.textContent = data.status;
-                        taskStatus.className = 'task-status status-' + data.status.toLowerCase();
+                        // Update task status and step
+                        taskStatusBadge.text(data.status);
+                        taskStatusBadge.removeClass().addClass(`badge status-badge ${getStatusBadgeClass(data.status)}`);
                         
-                        // Show duration if available
-                        if (data.duration) {
-                            const minutes = Math.floor(data.duration / 60);
-                            const seconds = data.duration % 60;
-                            taskDuration.textContent = `${minutes}m ${seconds}s`;
+                        if (data.step) {
+                            $('#taskStep').text(data.step);
+                            $('#currentStep').text(data.step);
+                            stepSpinner.show();
                         }
+                    } else if (data.type === 'task_complete' && data.id === taskId) {
+                        // Update terminal output
+                        updateTerminalOutput(data.output);
+                        
+                        // Update task status
+                        taskStatusBadge.text(data.status);
+                        taskStatusBadge.removeClass().addClass(`badge status-badge ${getStatusBadgeClass(data.status)}`);
+                        
+                        // Update task completion
+                        taskCompleted = true;
+                        cancelBtn.prop('disabled', true);
+                        stepSpinner.hide();
+                        
+                        // Remove blinking cursor
+                        addBlinkingCursor(terminalOutput, false);
+                        
+                        // Reload task details to get final information
+                        loadTaskDetails();
                     }
                 };
                 
                 ws.onclose = function() {
                     console.log('WebSocket disconnected');
                     // Try to reconnect after a delay if the task is not completed
-                    if (!isCompleted) {
+                    if (!taskCompleted) {
                         setTimeout(initWebSocket, 5000);
                     }
                 };
@@ -3070,113 +6212,125 @@ cat > "$WORKDIR/ui/templates/task.html" <<'HTML'
                 };
             }
             
-            // Update task information from the server data
-            function updateTaskInfo(data) {
-                taskStatus.textContent = data.status;
-                taskStatus.className = 'task-status status-' + (data.status.includes('failed') ? 'failed' : 
-                                                              data.status.includes('completed') ? 'completed' : 'running');
-                
-                if (data.goal) {
-                    taskGoal.textContent = data.goal;
-                }
-                
-                if (data.created) {
-                    const date = new Date(data.created);
-                    taskCreated.textContent = date.toLocaleString();
-                }
-                
-                if (data.step !== undefined) {
-                    taskStep.textContent = data.step;
-                }
-                
-                if (data.output) {
-                    output.textContent = data.output;
-                    output.parentElement.scrollTop = output.parentElement.scrollHeight;
-                }
-                
-                // Enable cancel button if task is running
-                cancelBtn.disabled = data.status.includes('completed') || 
-                                      data.status.includes('failed') || 
-                                      data.status.includes('restarting');
-            }
-            
-            // Load task information from the API
-            function loadTaskInfo() {
-                fetch(`/api/task/${taskId}`)
-                    .then(response => response.json())
-                    .then(data => {
-                        if (data.error) {
-                            output.textContent = `Error: ${data.error}`;
-                            return;
-                        }
-                        
-                        updateTaskInfo(data);
-                        
-                        // Check if task is already completed
-                        isCompleted = data.status === 'completed' || 
-                                     data.status === 'failed' || 
-                                     data.status === 'restarting';
-                        
-                        // Set environment info if available
-                        if (data.environment) {
-                            const envHtml = [];
-                            for (const [key, value] of Object.entries(data.environment)) {
-                                envHtml.push(`<div><strong>${key}:</strong> ${value}</div>`);
-                            }
-                            environment.innerHTML = envHtml.join('');
-                        } else {
-                            environment.innerHTML = '<div>No environment information available</div>';
-                        }
+            // Copy terminal output
+            copyBtn.on('click', function() {
+                const text = terminalOutput.text();
+                navigator.clipboard.writeText(text)
+                    .then(() => {
+                        const originalText = copyBtn.html();
+                        copyBtn.html('<i class="bi bi-check"></i> Copied!');
+                        setTimeout(() => {
+                            copyBtn.html(originalText);
+                        }, 2000);
                     })
-                    .catch(error => {
-                        output.textContent = `Error loading task: ${error}`;
+                    .catch(err => {
+                        alert('Failed to copy: ' + err);
                     });
-            }
+            });
             
-            // Initialize the page
-            loadTaskInfo();
-            initWebSocket();
+            // Copy raw output
+            rawCopyBtn.on('click', function() {
+                navigator.clipboard.writeText(rawOutputText)
+                    .then(() => {
+                        const originalText = rawCopyBtn.html();
+                        rawCopyBtn.html('<i class="bi bi-check"></i> Copied!');
+                        setTimeout(() => {
+                            rawCopyBtn.html(originalText);
+                        }, 2000);
+                    })
+                    .catch(err => {
+                        alert('Failed to copy: ' + err);
+                    });
+            });
             
-            // Set up event listeners
-            refreshBtn.addEventListener('click', loadTaskInfo);
+            // Download terminal output
+            downloadBtn.on('click', function() {
+                const text = terminalOutput.text();
+                const blob = new Blob([text], { type: 'text/plain' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `task_${taskId}_output.txt`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            });
             
-            cancelBtn.addEventListener('click', function() {
+            // Download raw output
+            rawDownloadBtn.on('click', function() {
+                const blob = new Blob([rawOutputText], { type: 'text/plain' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `task_${taskId}_raw_output.txt`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            });
+            
+            // Clear terminal
+            clearBtn.on('click', function() {
+                if (confirm('Are you sure you want to clear the terminal? This will only clear the view, not the actual task output.')) {
+                    terminalOutput.empty();
+                }
+            });
+            
+            // Cancel task
+            cancelBtn.on('click', function() {
                 if (confirm('Are you sure you want to cancel this task?')) {
-                    fetch(`/api/task/${taskId}/cancel`, { method: 'POST' })
-                        .then(response => response.json())
-                        .then(data => {
+                    $.ajax({
+                        url: `/api/task/${taskId}/cancel`,
+                        method: 'POST',
+                        success: function(data) {
                             if (data.success) {
                                 alert('Task cancelled successfully');
-                                loadTaskInfo();
+                                loadTaskDetails();
                             } else {
                                 alert(`Failed to cancel task: ${data.error}`);
                             }
-                        })
-                        .catch(error => {
+                        },
+                        error: function(xhr, status, error) {
                             alert(`Error: ${error}`);
-                        });
+                        }
+                    });
                 }
             });
             
-            clearBtn.addEventListener('click', function() {
-                output.textContent = '';
+            // Refresh button
+            refreshBtn.on('click', function() {
+                loadTaskDetails();
             });
             
-            copyBtn.addEventListener('click', function() {
-                const textarea = document.createElement('textarea');
-                textarea.value = output.textContent;
-                document.body.appendChild(textarea);
-                textarea.select();
-                document.execCommand('copy');
-                document.body.removeChild(textarea);
+            // Auto-scroll toggle
+            autoScrollToggle.on('change', function() {
+                autoScroll = $(this).is(':checked');
                 
-                // Show a temporary confirmation
-                const originalText = copyBtn.textContent;
-                copyBtn.textContent = 'Copied!';
-                setTimeout(() => {
-                    copyBtn.textContent = originalText;
-                }, 2000);
+                if (autoScroll) {
+                    const terminal = $('.terminal');
+                    terminal.scrollTop(terminal[0].scrollHeight);
+                }
             });
+            
+            // Scroll to bottom button
+            scrollToBottomBtn.on('click', function() {
+                const terminal = $('.terminal');
+                terminal.scrollTop(terminal[0].scrollHeight);
+            });
+            
+            // Initialize
+            loadTaskDetails();
+            initWebSocket();
+            
+            // Set up auto-refresh
+            const refreshInterval = setInterval(function() {
+                if (!taskCompleted) {
+                    loadTaskDetails();
+                } else {
+                    clearInterval(refreshInterval);
+                }
+            }, 10000);  // Refresh every 10 seconds if task is not completed
         });
     </script>
 </body>
