@@ -1,4 +1,3 @@
-#!/usr/bin/env bash
 #
 # prime.sh   —  WSL-aware, Ollama-powered, gemma3 agent with UI
 # --------------------------------------------------------------------

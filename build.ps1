@@ -43,7 +43,7 @@ function Append-Directory {
 
 # Start with a clean output file
 Write-Host "Creating $outputFile..."
-"" | Out-File -FilePath $outputFile -Encoding utf8
+"#!/usr/bin/env bash" | Out-File -FilePath $outputFile -Encoding utf8
 
 # Build the script in the correct order
 Write-Host "Building prime.sh from source files..."
