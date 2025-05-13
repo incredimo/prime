@@ -3101,17 +3101,39 @@ cat > "$WORKDIR/ui/templates/history.html" <<'HTML'
 <body>
     <div class="container">
         <header>
-            <div class="logo">
-                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M12 8V4m0 8v-4m0 8v-4m0 8v-4M4 6h16M4 10h16M4 14h16M4 18h16"></path>
+            <div class="logo" aria-label="Infinite AI Agent">
+                <!-- Robot SVG Icon -->
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false">
+                    <rect x="3" y="7" width="18" height="12" rx="4" fill="#343a40"/>
+                    <circle cx="8" cy="13" r="2" fill="#fff"/>
+                    <circle cx="16" cy="13" r="2" fill="#fff"/>
+                    <rect x="10.5" y="3" width="3" height="4" rx="1.5" fill="#343a40"/>
                 </svg>
                 <span>Infinite AI Agent</span>
             </div>
-            <nav>
+            <nav aria-label="Main navigation">
                 <ul>
-                    <li><a href="/">Home</a></li>
-                    <li><a href="/history" class="active">History</a></li>
-                    <li><a href="/logs">Logs</a></li>
+                    <li>
+                        <a href="/">
+                            <!-- Home SVG -->
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 12L12 4l9 8" stroke="#343a40" stroke-width="2" fill="none"/><path d="M5 12v7a2 2 0 002 2h2a2 2 0 002-2v-3h2v3a2 2 0 002 2h2a2 2 0 002-2v-7" stroke="#343a40" stroke-width="2" fill="none"/></svg>
+                            Home
+                        </a>
+                    </li>
+                    <li>
+                        <a href="/history" class="active">
+                            <!-- History SVG -->
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" stroke="#343a40" stroke-width="2" fill="none"/><path d="M12 6v6l4 2" stroke="#343a40" stroke-width="2"/></svg>
+                            History
+                        </a>
+                    </li>
+                    <li>
+                        <a href="/logs">
+                            <!-- Logs SVG -->
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2" stroke="#343a40" stroke-width="2" fill="none"/><path d="M8 8h8M8 12h8M8 16h4" stroke="#343a40" stroke-width="2"/></svg>
+                            Logs
+                        </a>
+                    </li>
                 </ul>
             </nav>
         </header>
@@ -3140,623 +3162,258 @@ cat > "$WORKDIR/ui/templates/index.html" <<'HTML'
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Infinite AI Agent</title>
-    <link rel="stylesheet" href="/static/css/bootstrap.min.css">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-    <style>
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #f8f9fa;
-        }
-        
-        .navbar {
-            background-color: #343a40 !important;
-            box-shadow: 0 2px 4px rgba(0,0,0,.1);
-        }
-        
-        .card {
-            border: none;
-            box-shadow: 0 0.125rem 0.25rem rgba(0,0,0,.075);
-            margin-bottom: 1.5rem;
-            border-radius: 0.5rem;
-        }
-        
-        .card-header {
-            background-color: #fff;
-            border-bottom: 1px solid rgba(0,0,0,.05);
-            border-radius: 0.5rem 0.5rem 0 0 !important;
-            padding: 1rem 1.25rem;
-        }
-        
-        .task-list {
-            max-height: 600px;
-            overflow-y: auto;
-        }
-        
-        .task-item {
-            border-left: 3px solid transparent;
-            transition: all 0.2s ease;
-        }
-        
-        .task-item:hover {
-            background-color: rgba(0,0,0,.01);
-        }
-        
-        .task-item-running { border-left-color: #007bff; }
-        .task-item-completed { border-left-color: #28a745; }
-        .task-item-failed { border-left-color: #dc3545; }
-        .task-item-pending { border-left-color: #6c757d; }
-        
-        .status-badge {
-            font-size: 0.8em;
-            padding: 0.3em 0.6em;
-            border-radius: 50rem;
-        }
-        
-        .status-running { background-color: #007bff; color: white; }
-        .status-completed { background-color: #28a745; color: white; }
-        .status-failed { background-color: #dc3545; color: white; }
-        .status-pending { background-color: #6c757d; color: white; }
-        
-        .system-status {
-            display: flex;
-            align-items: center;
-            margin-bottom: 0.5rem;
-        }
-        
-        .status-indicator {
-            display: inline-block;
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-            margin-right: 0.5rem;
-        }
-        
-        .status-online { background-color: #28a745; }
-        .status-offline { background-color: #dc3545; }
-        
-        .model-badge {
-            background-color: #6610f2;
-            color: white;
-            font-size: 0.75em;
-            margin-right: 0.25rem;
-        }
-        
-        .goal-form {
-            background-color: #fff;
-            border-radius: 0.5rem;
-            padding: 1.5rem;
-            box-shadow: 0 0.125rem 0.25rem rgba(0,0,0,.075);
-        }
-        
-        .stats-card {
-            text-align: center;
-            padding: 1rem;
-        }
-        
-        .stats-icon {
-            font-size: 2rem;
-            margin-bottom: 0.5rem;
-        }
-        
-        .stats-number {
-            font-size: 1.5rem;
-            font-weight: bold;
-        }
-        
-        .stats-label {
-            font-size: 0.9rem;
-            color: #6c757d;
-        }
-        
-        #activeTasks .list-group-item {
-            border-left-width: 3px;
-            transition: all 0.2s;
-        }
-        
-        #activeTasks .list-group-item:hover {
-            background-color: #f8f9fa;
-        }
-        
-        .task-time {
-            font-size: 0.8em;
-            color: #6c757d;
-        }
-        
-        .task-controls {
-            display: flex;
-            gap: 0.5rem;
-        }
-        
-        .btn-icon {
-            padding: 0.25rem 0.5rem;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-        }
-    </style>
+    <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
-        <div class="container-fluid">
-            <a class="navbar-brand" href="/">
-                <i class="bi bi-robot"></i> Infinite AI Agent
-            </a>
-            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
-                <span class="navbar-toggler-icon"></span>
-            </button>
-            <div class="collapse navbar-collapse" id="navbarNav">
-                <ul class="navbar-nav">
-                    <li class="nav-item">
-                        <a class="nav-link active" href="/"><i class="bi bi-house-fill"></i> Home</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="/logs"><i class="bi bi-journal-text"></i> System Logs</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="/history"><i class="bi bi-clock-history"></i> Task History</a>
-                    </li>
-                </ul>
-            </div>
+    <header>
+        <div class="logo" aria-label="Infinite AI Agent">
+            <!-- Robot SVG Icon -->
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false">
+                <rect x="3" y="7" width="18" height="12" rx="4" fill="#343a40"/>
+                <circle cx="8" cy="13" r="2" fill="#fff"/>
+                <circle cx="16" cy="13" r="2" fill="#fff"/>
+                <rect x="10.5" y="3" width="3" height="4" rx="1.5" fill="#343a40"/>
+            </svg>
+            <span>Infinite AI Agent</span>
         </div>
-    </nav>
+        <nav aria-label="Main navigation">
+            <ul>
+                <li><a href="/" aria-current="page">
+                    <!-- Home SVG -->
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 12L12 4l9 8" stroke="#343a40" stroke-width="2" fill="none"/><path d="M5 12v7a2 2 0 002 2h2a2 2 0 002-2v-3h2v3a2 2 0 002 2h2a2 2 0 002-2v-7" stroke="#343a40" stroke-width="2" fill="none"/></svg>
+                    Home
+                </a></li>
+                <li><a href="/logs">
+                    <!-- Logs SVG -->
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2" stroke="#343a40" stroke-width="2" fill="none"/><path d="M8 8h8M8 12h8M8 16h4" stroke="#343a40" stroke-width="2"/></svg>
+                    System Logs
+                </a></li>
+                <li><a href="/history">
+                    <!-- History SVG -->
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" stroke="#343a40" stroke-width="2" fill="none"/><path d="M12 6v6l4 2" stroke="#343a40" stroke-width="2"/></svg>
+                    Task History
+                </a></li>
+            </ul>
+        </nav>
+    </header>
 
-    <div class="container-fluid py-4">
-        <div class="row">
-            <!-- Left Column -->
-            <div class="col-lg-8">
-                <div class="card">
-                    <div class="card-header d-flex justify-content-between align-items-center">
-                        <h5 class="mb-0"><i class="bi bi-list-check"></i> Active Tasks</h5>
-                        <button id="refreshTasks" class="btn btn-sm btn-outline-secondary">
-                            <i class="bi bi-arrow-clockwise"></i> Refresh
-                        </button>
-                    </div>
-                    <div class="card-body p-0">
-                        <div id="activeTasks" class="list-group list-group-flush task-list">
-                            <!-- Tasks will be populated here -->
-                            <div class="text-center py-5" id="noTasksMessage">
-                                <i class="bi bi-inbox" style="font-size: 3rem; color: #dee2e6;"></i>
-                                <p class="mt-3 text-muted">No active tasks</p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="card">
-                    <div class="card-header">
-                        <h5 class="mb-0"><i class="bi bi-bar-chart"></i> Task Statistics</h5>
-                    </div>
-                    <div class="card-body">
-                        <div class="row">
-                            <div class="col-md-3">
-                                <div class="stats-card">
-                                    <div class="stats-icon text-primary">
-                                        <i class="bi bi-lightning-charge"></i>
-                                    </div>
-                                    <div class="stats-number" id="activeTasksCount">0</div>
-                                    <div class="stats-label">Active Tasks</div>
-                                </div>
-                            </div>
-                            <div class="col-md-3">
-                                <div class="stats-card">
-                                    <div class="stats-icon text-success">
-                                        <i class="bi bi-check-circle"></i>
-                                    </div>
-                                    <div class="stats-number" id="completedTasksCount">0</div>
-                                    <div class="stats-label">Completed</div>
-                                </div>
-                            </div>
-                            <div class="col-md-3">
-                                <div class="stats-card">
-                                    <div class="stats-icon text-danger">
-                                        <i class="bi bi-x-circle"></i>
-                                    </div>
-                                    <div class="stats-number" id="failedTasksCount">0</div>
-                                    <div class="stats-label">Failed</div>
-                                </div>
-                            </div>
-                            <div class="col-md-3">
-                                <div class="stats-card">
-                                    <div class="stats-icon text-info">
-                                        <i class="bi bi-clock-history"></i>
-                                    </div>
-                                    <div class="stats-number" id="totalTasksCount">0</div>
-                                    <div class="stats-label">Total Tasks</div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="card">
-                    <div class="card-header">
-                        <h5 class="mb-0"><i class="bi bi-clock-history"></i> Recent Tasks</h5>
-                    </div>
-                    <div class="card-body p-0">
-                        <div id="recentTasks" class="list-group list-group-flush">
-                            <!-- Recent tasks will be populated here -->
-                            <div class="text-center py-5" id="noRecentTasksMessage">
-                                <i class="bi bi-clock" style="font-size: 3rem; color: #dee2e6;"></i>
-                                <p class="mt-3 text-muted">No recent tasks</p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Right Column -->
-            <div class="col-lg-4">
-                <div class="card">
-                    <div class="card-header">
-                        <h5 class="mb-0"><i class="bi bi-send"></i> Start New Task</h5>
-                    </div>
-                    <div class="card-body">
-                        <form action="/submit" method="post" class="goal-form">
-                            <div class="mb-3">
-                                <label for="goal" class="form-label">Enter your goal:</label>
-                                <textarea class="form-control" id="goal" name="goal" rows="3" placeholder="e.g., Install Docker, Create a Python script to analyze logs, etc."></textarea>
-                            </div>
-                            <button type="submit" class="btn btn-primary w-100">
-                                <i class="bi bi-play-fill"></i> Execute Task
+    <main>
+        <div class="container">
+            <div style="display: flex; flex-wrap: wrap; gap: 24px;">
+                <!-- Left Column -->
+                <section style="flex: 2 1 600px; min-width: 350px;">
+                    <!-- Active Tasks Card -->
+                    <div class="card" aria-labelledby="activeTasksTitle">
+                        <div class="card-header">
+                            <span class="card-title" id="activeTasksTitle">
+                                <!-- List SVG -->
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="6" width="16" height="2" fill="#343a40"/><rect x="4" y="11" width="16" height="2" fill="#343a40"/><rect x="4" y="16" width="16" height="2" fill="#343a40"/></svg>
+                                Active Tasks
+                            </span>
+                            <button id="refreshTasks" class="button button-secondary" aria-label="Refresh tasks">
+                                <!-- Refresh SVG -->
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 4v6h6" stroke="#fff" stroke-width="2" fill="none"/><path d="M20 20v-6h-6" stroke="#fff" stroke-width="2" fill="none"/><path d="M5 19A9 9 0 1 1 19 5" stroke="#fff" stroke-width="2" fill="none"/></svg>
+                                Refresh
                             </button>
-                        </form>
-                    </div>
-                </div>
-
-                <div class="card">
-                    <div class="card-header">
-                        <h5 class="mb-0"><i class="bi bi-info-circle"></i> System Status</h5>
-                    </div>
-                    <div class="card-body">
-                        <div class="system-status">
-                            <span class="status-indicator status-online" id="agentStatus"></span>
-                            <span>Agent: </span>
-                            <span class="ms-1" id="agentStatusText">Online</span>
-                        </div>
-                        <div class="system-status">
-                            <span class="status-indicator" id="ollamaStatus"></span>
-                            <span>Ollama: </span>
-                            <span class="ms-1" id="ollamaStatusText">Checking...</span>
-                        </div>
-                        <hr>
-                        <div class="mb-2">
-                            <strong>Current Model:</strong> <span id="currentModel">Loading...</span>
                         </div>
                         <div>
-                            <strong>Available Models:</strong>
-                            <div id="availableModels" class="mt-1">
-                                <div class="spinner-border spinner-border-sm text-primary" role="status">
-                                    <span class="visually-hidden">Loading...</span>
+                            <div id="activeTasks" class="task-list" aria-live="polite">
+                                <!-- Tasks will be populated here -->
+                                <div style="text-align:center; padding: 40px 0;" id="noTasksMessage">
+                                    <!-- Inbox SVG -->
+                                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="12" width="18" height="7" rx="2" stroke="#dee2e6" stroke-width="2" fill="none"/><path d="M3 12l3-7h12l3 7" stroke="#dee2e6" stroke-width="2" fill="none"/></svg>
+                                    <p class="task-meta">No active tasks</p>
                                 </div>
-                                <span class="ms-1">Loading models...</span>
                             </div>
                         </div>
-                        <hr>
-                        <div class="d-flex justify-content-between">
-                            <span><strong>API Port:</strong> <span id="apiPort">8000</span></span>
-                            <span><strong>UI Port:</strong> <span id="uiPort">8080</span></span>
+                    </div>
+
+                    <!-- Task Statistics Card -->
+                    <div class="card" aria-labelledby="taskStatsTitle">
+                        <div class="card-header">
+                            <span class="card-title" id="taskStatsTitle">
+                                <!-- Bar Chart SVG -->
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="10" width="3" height="10" fill="#343a40"/><rect x="10.5" y="6" width="3" height="14" fill="#343a40"/><rect x="17" y="2" width="3" height="18" fill="#343a40"/></svg>
+                                Task Statistics
+                            </span>
+                        </div>
+                        <div>
+                            <div class="status-dashboard">
+                                <div class="status-card">
+                                    <div class="stats-icon">
+                                        <!-- Lightning SVG -->
+                                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" fill="#0066cc"/></svg>
+                                    </div>
+                                    <div class="status-value" id="activeTasksCount">0</div>
+                                    <div>Active Tasks</div>
+                                </div>
+                                <div class="status-card">
+                                    <div class="stats-icon">
+                                        <!-- Check SVG -->
+                                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" aria-hidden="true"><polyline points="20 6 9 17 4 12" stroke="#28a745" stroke-width="3" fill="none"/></svg>
+                                    </div>
+                                    <div class="status-value" id="completedTasksCount">0</div>
+                                    <div>Completed</div>
+                                </div>
+                                <div class="status-card">
+                                    <div class="stats-icon">
+                                        <!-- X SVG -->
+                                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18" stroke="#dc3545" stroke-width="3"/><line x1="6" y1="6" x2="18" y2="18" stroke="#dc3545" stroke-width="3"/></svg>
+                                    </div>
+                                    <div class="status-value" id="failedTasksCount">0</div>
+                                    <div>Failed</div>
+                                </div>
+                                <div class="status-card">
+                                    <div class="stats-icon">
+                                        <!-- Clock SVG -->
+                                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" stroke="#17a2b8" stroke-width="2" fill="none"/><path d="M12 7v5l4 2" stroke="#17a2b8" stroke-width="2"/></svg>
+                                    </div>
+                                    <div class="status-value" id="totalTasksCount">0</div>
+                                    <div>Total Tasks</div>
+                                </div>
+                            </div>
                         </div>
                     </div>
-                </div>
 
-                <div class="card">
-                    <div class="card-header">
-                        <h5 class="mb-0"><i class="bi bi-life-preserver"></i> Quick Links</h5>
+                    <!-- Recent Tasks Card -->
+                    <div class="card" aria-labelledby="recentTasksTitle">
+                        <div class="card-header">
+                            <span class="card-title" id="recentTasksTitle">
+                                <!-- Clock SVG -->
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" stroke="#343a40" stroke-width="2" fill="none"/><path d="M12 7v5l4 2" stroke="#343a40" stroke-width="2"/></svg>
+                                Recent Tasks
+                            </span>
+                        </div>
+                        <div>
+                            <div id="recentTasks" class="task-list" aria-live="polite">
+                                <!-- Recent tasks will be populated here -->
+                                <div style="text-align:center; padding: 40px 0;" id="noRecentTasksMessage">
+                                    <!-- Clock SVG -->
+                                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" stroke="#dee2e6" stroke-width="2" fill="none"/><path d="M12 7v5l4 2" stroke="#dee2e6" stroke-width="2"/></svg>
+                                    <p class="task-meta">No recent tasks</p>
+                                </div>
+                            </div>
+                        </div>
                     </div>
-                    <div class="list-group list-group-flush">
-                        <a href="/logs" class="list-group-item list-group-item-action d-flex align-items-center">
-                            <i class="bi bi-journal-text me-2"></i> System Logs
-                        </a>
-                        <a href="/history" class="list-group-item list-group-item-action d-flex align-items-center">
-                            <i class="bi bi-clock-history me-2"></i> Task History
-                        </a>
-                        <a href="https://docs.anthropic.com/claude/docs" target="_blank" class="list-group-item list-group-item-action d-flex align-items-center">
-                            <i class="bi bi-book me-2"></i> Claude Documentation
-                            <i class="bi bi-box-arrow-up-right ms-auto"></i>
-                        </a>
-                        <a href="https://github.com/ollama/ollama" target="_blank" class="list-group-item list-group-item-action d-flex align-items-center">
-                            <i class="bi bi-github me-2"></i> Ollama GitHub
-                            <i class="bi bi-box-arrow-up-right ms-auto"></i>
-                        </a>
+                </section>
+
+                <!-- Right Column -->
+                <aside style="flex: 1 1 320px; min-width: 280px;">
+                    <!-- Start New Task Card -->
+                    <div class="card" aria-labelledby="startTaskTitle">
+                        <div class="card-header">
+                            <span class="card-title" id="startTaskTitle">
+                                <!-- Send SVG -->
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><polygon points="2 21 23 12 2 3 6 12 2 21" fill="#343a40"/></svg>
+                                Start New Task
+                            </span>
+                        </div>
+                        <div>
+                            <form action="/submit" method="post" class="goal-form" aria-label="Start new task">
+                                <div class="form-group">
+                                    <label for="goal">Enter your goal:</label>
+                                    <textarea id="goal" name="goal" rows="3" placeholder="e.g., Install Docker, Create a Python script to analyze logs, etc."></textarea>
+                                </div>
+                                <button type="submit" class="button" style="width:100%;">
+                                    <!-- Play SVG -->
+                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3" fill="#fff"/></svg>
+                                    Execute Task
+                                </button>
+                            </form>
+                        </div>
                     </div>
-                </div>
+
+                    <!-- System Status Card -->
+                    <div class="card" aria-labelledby="systemStatusTitle">
+                        <div class="card-header">
+                            <span class="card-title" id="systemStatusTitle">
+                                <!-- Info SVG -->
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" stroke="#343a40" stroke-width="2" fill="none"/><circle cx="12" cy="8" r="1.5" fill="#343a40"/><rect x="11" y="11" width="2" height="6" rx="1" fill="#343a40"/></svg>
+                                System Status
+                            </span>
+                        </div>
+                        <div>
+                            <div class="system-status">
+                                <span class="status-indicator status-online" id="agentStatus" aria-label="Agent online"></span>
+                                <span>Agent: </span>
+                                <span id="agentStatusText">Online</span>
+                            </div>
+                            <div class="system-status">
+                                <span class="status-indicator" id="ollamaStatus" aria-label="Ollama status"></span>
+                                <span>Ollama: </span>
+                                <span id="ollamaStatusText">Checking...</span>
+                            </div>
+                            <hr>
+                            <div style="margin-bottom: 8px;">
+                                <strong>Current Model:</strong> <span id="currentModel">Loading...</span>
+                            </div>
+                            <div>
+                                <strong>Available Models:</strong>
+                                <div id="availableModels" style="margin-top: 4px;">
+                                    <span class="loader" aria-label="Loading models"></span>
+                                    <span style="margin-left: 6px;">Loading models...</span>
+                                </div>
+                            </div>
+                            <hr>
+                            <div style="display: flex; justify-content: space-between;">
+                                <span><strong>API Port:</strong> <span id="apiPort">8000</span></span>
+                                <span><strong>UI Port:</strong> <span id="uiPort">8080</span></span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Quick Links Card -->
+                    <div class="card" aria-labelledby="quickLinksTitle">
+                        <div class="card-header">
+                            <span class="card-title" id="quickLinksTitle">
+                                <!-- Life Preserver SVG -->
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" stroke="#343a40" stroke-width="2" fill="none"/><circle cx="12" cy="12" r="4" stroke="#343a40" stroke-width="2" fill="none"/><path d="M2 12h4M18 12h4M12 2v4M12 18v4" stroke="#343a40" stroke-width="2"/></svg>
+                                Quick Links
+                            </span>
+                        </div>
+                        <div>
+                            <ul style="list-style:none; padding:0; margin:0;">
+                                <li>
+                                    <a href="/logs" class="button button-secondary" style="width:100%; margin-bottom:8px; display:flex; align-items:center; gap:8px;">
+                                        <!-- Journal SVG -->
+                                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2" stroke="#343a40" stroke-width="2" fill="none"/><path d="M8 8h8M8 12h8M8 16h4" stroke="#343a40" stroke-width="2"/></svg>
+                                        System Logs
+                                    </a>
+                                </li>
+                                <li>
+                                    <a href="/history" class="button button-secondary" style="width:100%; margin-bottom:8px; display:flex; align-items:center; gap:8px;">
+                                        <!-- Clock SVG -->
+                                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" stroke="#343a40" stroke-width="2" fill="none"/><path d="M12 7v5l4 2" stroke="#343a40" stroke-width="2"/></svg>
+                                        Task History
+                                    </a>
+                                </li>
+                                <li>
+                                    <a href="https://docs.anthropic.com/claude/docs" target="_blank" rel="noopener" class="button button-secondary" style="width:100%; margin-bottom:8px; display:flex; align-items:center; gap:8px;">
+                                        <!-- Book SVG -->
+                                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" stroke="#343a40" stroke-width="2" fill="none"/><path d="M7 4v16" stroke="#343a40" stroke-width="2"/></svg>
+                                        Claude Documentation
+                                        <!-- External Link SVG -->
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M14 3h7v7" stroke="#343a40" stroke-width="2"/><path d="M10 14l11-11" stroke="#343a40" stroke-width="2"/><rect x="3" y="10" width="11" height="11" rx="2" stroke="#343a40" stroke-width="2"/></svg>
+                                    </a>
+                                </li>
+                                <li>
+                                    <a href="https://github.com/ollama/ollama" target="_blank" rel="noopener" class="button button-secondary" style="width:100%; display:flex; align-items:center; gap:8px;">
+                                        <!-- GitHub SVG -->
+                                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 2C6.48 2 2 6.58 2 12.26c0 4.48 2.87 8.28 6.84 9.63.5.09.68-.22.68-.48 0-.24-.01-.87-.01-1.7-2.78.62-3.37-1.36-3.37-1.36-.45-1.18-1.1-1.5-1.1-1.5-.9-.63.07-.62.07-.62 1 .07 1.53 1.05 1.53 1.05.89 1.56 2.34 1.11 2.91.85.09-.66.35-1.11.63-1.37-2.22-.26-4.56-1.14-4.56-5.07 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.7 0 0 .84-.28 2.75 1.05a9.18 9.18 0 012.5-.34c.85 0 1.7.11 2.5.34 1.91-1.33 2.75-1.05 2.75-1.05.55 1.4.2 2.44.1 2.7.64.72 1.03 1.63 1.03 2.75 0 3.94-2.34 4.81-4.57 5.07.36.32.68.94.68 1.9 0 1.37-.01 2.47-.01 2.81 0 .27.18.58.69.48A10.01 10.01 0 0022 12.26C22 6.58 17.52 2 12 2z" fill="#343a40"/></svg>
+                                        Ollama GitHub
+                                        <!-- External Link SVG -->
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M14 3h7v7" stroke="#343a40" stroke-width="2"/><path d="M10 14l11-11" stroke="#343a40" stroke-width="2"/><rect x="3" y="10" width="11" height="11" rx="2" stroke="#343a40" stroke-width="2"/></svg>
+                                    </a>
+                                </li>
+                            </ul>
+                        </div>
+                    </div>
+                </aside>
             </div>
         </div>
-    </div>
+    </main>
 
-    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-    <script src="/static/js/bootstrap.bundle.min.js"></script>
-    <script>
-        $(document).ready(function() {
-            // Function to format date
-            function formatDate(dateString) {
-                const date = new Date(dateString);
-                return date.toLocaleString();
-            }
-            
-            // Function to format duration
-            function formatDuration(seconds) {
-                if (!seconds) return 'N/A';
-                
-                const minutes = Math.floor(seconds / 60);
-                const remainingSeconds = seconds % 60;
-                
-                if (minutes === 0) {
-                    return `${remainingSeconds}s`;
-                } else {
-                    return `${minutes}m ${remainingSeconds}s`;
-                }
-            }
-            
-            // Get status badge class
-            function getStatusBadgeClass(status) {
-                if (status.includes('running') || status.includes('starting')) {
-                    return 'status-running';
-                } else if (status.includes('completed')) {
-                    return 'status-completed';
-                } else if (status.includes('failed') || status.includes('error')) {
-                    return 'status-failed';
-                } else {
-                    return 'status-pending';
-                }
-            }
-            
-            // Get task item class
-            function getTaskItemClass(status) {
-                if (status.includes('running') || status.includes('starting')) {
-                    return 'task-item-running';
-                } else if (status.includes('completed')) {
-                    return 'task-item-completed';
-                } else if (status.includes('failed') || status.includes('error')) {
-                    return 'task-item-failed';
-                } else {
-                    return 'task-item-pending';
-                }
-            }
-            
-            // Function to load active tasks
-            function loadActiveTasks() {
-                $.ajax({
-                    url: '/api/tasks',
-                    method: 'GET',
-                    success: function(data) {
-                        const tasksContainer = $('#activeTasks');
-                        const noTasksMessage = $('#noTasksMessage');
-                        
-                        // Clear previous tasks
-                        tasksContainer.find('.task-item').remove();
-                        
-                        // Update active tasks count
-                        $('#activeTasksCount').text(Object.keys(data).length);
-                        
-                        if (Object.keys(data).length === 0) {
-                            noTasksMessage.show();
-                        } else {
-                            noTasksMessage.hide();
-                            
-                            // Sort tasks by start time (newest first)
-                            const sortedTasks = Object.values(data).sort((a, b) => {
-                                return new Date(b.start_time || 0) - new Date(a.start_time || 0);
-                            });
-                            
-                            // Add tasks to the list
-                            sortedTasks.forEach(task => {
-                                const taskId = task.id || task.task_id;
-                                const goal = task.goal;
-                                const status = task.status;
-                                const step = task.step || 0;
-                                const startTime = task.start_time ? new Date(task.start_time * 1000) : new Date();
-                                
-                                const taskHtml = `
-                                    <div class="list-group-item task-item ${getTaskItemClass(status)}">
-                                        <div class="d-flex justify-content-between align-items-start">
-                                            <div>
-                                                <h6 class="mb-1">
-                                                    <a href="/task/${taskId}" class="text-decoration-none">
-                                                        ${goal}
-                                                    </a>
-                                                </h6>
-                                                <div class="d-flex align-items-center">
-                                                    <span class="badge ${getStatusBadgeClass(status)} status-badge me-2">${status}</span>
-                                                    <small class="text-muted">ID: ${taskId} | Step: ${step}</small>
-                                                </div>
-                                            </div>
-                                            <div class="task-controls">
-                                                <a href="/task/${taskId}" class="btn btn-sm btn-outline-primary btn-icon" title="View Task">
-                                                    <i class="bi bi-eye"></i>
-                                                </a>
-                                                <a href="/task_logs/${taskId}" class="btn btn-sm btn-outline-secondary btn-icon" title="View Logs">
-                                                    <i class="bi bi-file-text"></i>
-                                                </a>
-                                                <button data-task-id="${taskId}" class="btn btn-sm btn-outline-danger btn-icon cancel-task-btn" title="Cancel Task" ${status.includes('completed') || status.includes('failed') ? 'disabled' : ''}>
-                                                    <i class="bi bi-x-circle"></i>
-                                                </button>
-                                            </div>
-                                        </div>
-                                        <div class="task-time mt-1">
-                                            <small class="text-muted">Started: ${startTime.toLocaleString()}</small>
-                                        </div>
-                                    </div>
-                                `;
-                                
-                                tasksContainer.append(taskHtml);
-                            });
-                        }
-                    },
-                    error: function(xhr, status, error) {
-                        console.error('Error loading active tasks:', error);
-                    }
-                });
-            }
-            
-            // Function to load recent tasks
-            function loadRecentTasks() {
-                $.ajax({
-                    url: '/api/history?limit=5',
-                    method: 'GET',
-                    success: function(data) {
-                        const tasksContainer = $('#recentTasks');
-                        const noRecentTasksMessage = $('#noRecentTasksMessage');
-                        
-                        // Clear previous tasks
-                        tasksContainer.find('.task-item').remove();
-                        
-                        if (data.length === 0) {
-                            noRecentTasksMessage.show();
-                        } else {
-                            noRecentTasksMessage.hide();
-                            
-                            // Update task counts
-                            let completedCount = 0;
-                            let failedCount = 0;
-                            
-                            // Add tasks to the list
-                            data.forEach(task => {
-                                const taskId = task.id;
-                                const goal = task.goal;
-                                const status = task.status;
-                                const timestamp = formatDate(task.timestamp);
-                                const duration = formatDuration(task.duration);
-                                
-                                // Update counts
-                                if (status === 'completed') {
-                                    completedCount++;
-                                } else if (status === 'failed') {
-                                    failedCount++;
-                                }
-                                
-                                const taskHtml = `
-                                    <div class="list-group-item task-item ${getTaskItemClass(status)}">
-                                        <div class="d-flex justify-content-between align-items-start">
-                                            <div>
-                                                <h6 class="mb-1">
-                                                    <a href="/task/${taskId}" class="text-decoration-none">
-                                                        ${goal}
-                                                    </a>
-                                                </h6>
-                                                <div class="d-flex align-items-center">
-                                                    <span class="badge ${getStatusBadgeClass(status)} status-badge me-2">${status}</span>
-                                                    <small class="text-muted">ID: ${taskId} | Duration: ${duration}</small>
-                                                </div>
-                                            </div>
-                                            <div class="task-controls">
-                                                <a href="/task/${taskId}" class="btn btn-sm btn-outline-primary btn-icon" title="View Task">
-                                                    <i class="bi bi-eye"></i>
-                                                </a>
-                                                <a href="/task_logs/${taskId}" class="btn btn-sm btn-outline-secondary btn-icon" title="View Logs">
-                                                    <i class="bi bi-file-text"></i>
-                                                </a>
-                                            </div>
-                                        </div>
-                                        <div class="task-time mt-1">
-                                            <small class="text-muted">Completed: ${timestamp}</small>
-                                        </div>
-                                    </div>
-                                `;
-                                
-                                tasksContainer.append(taskHtml);
-                            });
-                            
-                            // Update statistics
-                            $('#completedTasksCount').text(completedCount);
-                            $('#failedTasksCount').text(failedCount);
-                            $('#totalTasksCount').text(data.length);
-                        }
-                    },
-                    error: function(xhr, status, error) {
-                        console.error('Error loading recent tasks:', error);
-                    }
-                });
-            }
-            
-            // Function to load system status
-            function loadSystemStatus() {
-                $.ajax({
-                    url: '/api/status',
-                    method: 'GET',
-                    success: function(data) {
-                        // Update Ollama status
-                        if (data.ollama === 'running') {
-                            $('#ollamaStatus').removeClass('status-offline').addClass('status-online');
-                            $('#ollamaStatusText').text('Online');
-                        } else {
-                            $('#ollamaStatus').removeClass('status-online').addClass('status-offline');
-                            $('#ollamaStatusText').text('Offline');
-                        }
-                        
-                        // Update current model
-                        $('#currentModel').text(data.current_model);
-                        
-                        // Update available models
-                        if (data.models && data.models.length > 0) {
-                            const modelsContainer = $('#availableModels');
-                            modelsContainer.empty();
-                            
-                            data.models.forEach(model => {
-                                modelsContainer.append(`
-                                    <span class="badge model-badge">${model}</span>
-                                `);
-                            });
-                        } else {
-                            $('#availableModels').html('<span class="text-muted">No models available</span>');
-                        }
-                        
-                        // Update ports
-                        $('#apiPort').text(data.api_port || 8000);
-                        $('#uiPort').text(data.ui_port || 8080);
-                    },
-                    error: function(xhr, status, error) {
-                        console.error('Error loading system status:', error);
-                        
-                        // Update status indicators to offline
-                        $('#ollamaStatus').removeClass('status-online').addClass('status-offline');
-                        $('#ollamaStatusText').text('Error connecting');
-                    }
-                });
-            }
-            
-            // Cancel task
-            $(document).on('click', '.cancel-task-btn', function() {
-                const taskId = $(this).data('task-id');
-                
-                if (confirm(`Are you sure you want to cancel task ${taskId}?`)) {
-                    $.ajax({
-                        url: `/api/task/${taskId}/cancel`,
-                        method: 'POST',
-                        success: function(data) {
-                            if (data.success) {
-                                alert('Task cancelled successfully');
-                                loadActiveTasks();
-                            } else {
-                                alert(`Failed to cancel task: ${data.error}`);
-                            }
-                        },
-                        error: function(xhr, status, error) {
-                            alert(`Error: ${error}`);
-                        }
-                    });
-                }
-            });
-            
-            // Refresh button
-            $('#refreshTasks').click(function() {
-                loadActiveTasks();
-                loadRecentTasks();
-                loadSystemStatus();
-            });
-            
-            // Load data on page load
-            loadActiveTasks();
-            loadRecentTasks();
-            loadSystemStatus();
-            
-            // Set up auto-refresh
-            setInterval(function() {
-                loadActiveTasks();
-                loadSystemStatus();
-            }, 10000);  // Refresh every 10 seconds
-        });
-    </script>
+    <script src="/static/app.js"></script>
 </body>
 </html>
 HTML
@@ -3770,315 +3427,176 @@ cat > "$WORKDIR/ui/templates/logs.html" <<'HTML'
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Infinite AI - System Logs</title>
-    <link rel="stylesheet" href="/static/css/bootstrap.min.css">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-    <style>
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #f8f9fa;
-        }
-        
-        .navbar {
-            background-color: #343a40 !important;
-            box-shadow: 0 2px 4px rgba(0,0,0,.1);
-        }
-        
-        .log-container {
-            background-color: #212529;
-            color: #f8f9fa;
-            font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
-            font-size: 0.9rem;
-            border-radius: 0.5rem;
-            padding: 1rem;
-            height: calc(100vh - 180px);
-            overflow-y: auto;
-            position: relative;
-        }
-        
-        .log-entry {
-            margin-bottom: 0.25rem;
-            padding: 0.25rem 0.5rem;
-            border-radius: 0.25rem;
-            word-wrap: break-word;
-            border-left: 3px solid transparent;
-        }
-        
-        .log-entry:hover {
-            background-color: rgba(255, 255, 255, 0.05);
-        }
-        
-        .log-timestamp {
-            color: #6c757d;
-            margin-right: 0.5rem;
-        }
-        
-        .log-info { border-left-color: #0dcaf0; }
-        .log-warning { border-left-color: #ffc107; }
-        .log-error { border-left-color: #dc3545; }
-        .log-success { border-left-color: #198754; }
-        
-        .log-toolbar {
-            position: sticky;
-            top: 0;
-            background-color: #212529;
-            padding: 0.5rem;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-            z-index: 100;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        
-        .log-search {
-            position: relative;
-        }
-        
-        .log-search .form-control {
-            background-color: #2c3034;
-            border-color: #495057;
-            color: #fff;
-            padding-left: 2rem;
-        }
-        
-        .log-search .search-icon {
-            position: absolute;
-            left: 0.5rem;
-            top: 50%;
-            transform: translateY(-50%);
-            color: #6c757d;
-        }
-        
-        .search-clear {
-            position: absolute;
-            right: 0.5rem;
-            top: 50%;
-            transform: translateY(-50%);
-            color: #6c757d;
-            cursor: pointer;
-            display: none;
-        }
-        
-        .filter-badge {
-            cursor: pointer;
-            user-select: none;
-            transition: all 0.2s;
-        }
-        
-        .filter-badge.active {
-            background-color: #0d6efd !important;
-            color: white !important;
-        }
-        
-        .auto-scroll-toggle {
-            cursor: pointer;
-            user-select: none;
-        }
-        
-        .btn-icon {
-            padding: 0.25rem 0.5rem;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            margin-left: 0.25rem;
-        }
-        
-        .status-card {
-            background-color: #fff;
-            border-radius: 0.5rem;
-            padding: 1rem;
-            margin-bottom: 1rem;
-            box-shadow: 0 0.125rem 0.25rem rgba(0,0,0,.075);
-        }
-        
-        .status-indicator {
-            display: inline-block;
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-            margin-right: 0.5rem;
-        }
-        
-        .status-online { background-color: #28a745; }
-        .status-offline { background-color: #dc3545; }
-        
-        .model-badge {
-            background-color: #6610f2;
-            color: white;
-            font-size: 0.75em;
-            margin-right: 0.25rem;
-        }
-        
-        #noLogsMessage {
-            text-align: center;
-            padding: 2rem;
-            color: #6c757d;
-        }
-        
-        .log-actions {
-            display: flex;
-            gap: 0.5rem;
-        }
-        
-        .log-stats {
-            margin-bottom: 1rem;
-        }
-        
-        .log-count {
-            font-size: 1.2rem;
-            font-weight: bold;
-        }
-    </style>
+    <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
-        <div class="container-fluid">
-            <a class="navbar-brand" href="/">
-                <i class="bi bi-robot"></i> Infinite AI Agent
-            </a>
-            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
-                <span class="navbar-toggler-icon"></span>
-            </button>
-            <div class="collapse navbar-collapse" id="navbarNav">
-                <ul class="navbar-nav">
-                    <li class="nav-item">
-                        <a class="nav-link" href="/"><i class="bi bi-house-fill"></i> Home</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link active" href="/logs"><i class="bi bi-journal-text"></i> System Logs</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="/history"><i class="bi bi-clock-history"></i> Task History</a>
-                    </li>
-                </ul>
-            </div>
+    <header>
+        <div class="logo" aria-label="Infinite AI Agent">
+            <!-- Robot SVG Icon -->
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false">
+                <rect x="3" y="7" width="18" height="12" rx="4" fill="#343a40"/>
+                <circle cx="8" cy="13" r="2" fill="#fff"/>
+                <circle cx="16" cy="13" r="2" fill="#fff"/>
+                <rect x="10.5" y="3" width="3" height="4" rx="1.5" fill="#343a40"/>
+            </svg>
+            <span>Infinite AI Agent</span>
         </div>
-    </nav>
+        <nav aria-label="Main navigation">
+            <ul>
+                <li><a href="/">
+                    <!-- Home SVG -->
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 12L12 4l9 8" stroke="#343a40" stroke-width="2" fill="none"/><path d="M5 12v7a2 2 0 002 2h2a2 2 0 002-2v-3h2v3a2 2 0 002 2h2a2 2 0 002-2v-7" stroke="#343a40" stroke-width="2" fill="none"/></svg>
+                    Home
+                </a></li>
+                <li><a href="/logs" aria-current="page">
+                    <!-- Logs SVG -->
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2" stroke="#343a40" stroke-width="2" fill="none"/><path d="M8 8h8M8 12h8M8 16h4" stroke="#343a40" stroke-width="2"/></svg>
+                    System Logs
+                </a></li>
+                <li><a href="/history">
+                    <!-- History SVG -->
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" stroke="#343a40" stroke-width="2" fill="none"/><path d="M12 6v6l4 2" stroke="#343a40" stroke-width="2"/></svg>
+                    Task History
+                </a></li>
+            </ul>
+        </nav>
+    </header>
 
-    <div class="container-fluid py-4">
-        <div class="row">
+    <main>
+        <div class="container" style="display: flex; flex-wrap: wrap; gap: 24px;">
             <!-- Main Content -->
-            <div class="col-lg-9">
-                <div class="d-flex justify-content-between align-items-center mb-3">
+            <section style="flex: 2 1 600px; min-width: 350px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px;">
                     <h2>System Logs</h2>
                     <div class="log-actions">
-                        <button id="downloadLogsBtn" class="btn btn-outline-secondary">
-                            <i class="bi bi-download"></i> Download Logs
+                        <button id="downloadLogsBtn" class="button button-secondary" aria-label="Download logs">
+                            <!-- Download SVG -->
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3v12m0 0l-4-4m4 4l4-4" stroke="#343a40" stroke-width="2" fill="none"/><rect x="4" y="17" width="16" height="4" rx="2" stroke="#343a40" stroke-width="2" fill="none"/></svg>
+                            Download Logs
                         </button>
-                        <button id="clearLogsBtn" class="btn btn-outline-danger">
-                            <i class="bi bi-trash"></i> Clear View
+                        <button id="clearLogsBtn" class="button button-danger" aria-label="Clear log view">
+                            <!-- Trash SVG -->
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="6" width="18" height="15" rx="2" stroke="#dc3545" stroke-width="2" fill="none"/><path d="M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2" stroke="#dc3545" stroke-width="2" fill="none"/><line x1="10" y1="11" x2="10" y2="17" stroke="#dc3545" stroke-width="2"/><line x1="14" y1="11" x2="14" y2="17" stroke="#dc3545" stroke-width="2"/></svg>
+                            Clear View
                         </button>
                     </div>
                 </div>
-                
-                <div class="log-stats d-flex gap-3">
-                    <div class="bg-light p-2 rounded">
-                        <small class="text-muted">Total Logs</small>
+                <div class="log-stats" style="display: flex; gap: 18px; margin-bottom: 16px;">
+                    <div>
+                        <small class="task-meta">Total Logs</small>
                         <div class="log-count" id="totalLogCount">0</div>
                     </div>
-                    <div class="bg-light p-2 rounded">
-                        <small class="text-muted">Info</small>
-                        <div class="log-count text-info" id="infoLogCount">0</div>
+                    <div>
+                        <small class="task-meta">Info</small>
+                        <div class="log-count" id="infoLogCount">0</div>
                     </div>
-                    <div class="bg-light p-2 rounded">
-                        <small class="text-muted">Warning</small>
-                        <div class="log-count text-warning" id="warningLogCount">0</div>
+                    <div>
+                        <small class="task-meta">Warning</small>
+                        <div class="log-count" id="warningLogCount">0</div>
                     </div>
-                    <div class="bg-light p-2 rounded">
-                        <small class="text-muted">Error</small>
-                        <div class="log-count text-danger" id="errorLogCount">0</div>
+                    <div>
+                        <small class="task-meta">Error</small>
+                        <div class="log-count" id="errorLogCount">0</div>
                     </div>
                 </div>
-                
                 <div class="log-container">
-                    <div class="log-toolbar">
-                        <div class="d-flex gap-2 align-items-center">
-                            <div class="log-search">
-                                <i class="bi bi-search search-icon"></i>
-                                <input type="text" class="form-control form-control-sm" id="logSearch" placeholder="Search logs...">
-                                <i class="bi bi-x-circle search-clear" id="clearSearch"></i>
+                    <div class="log-toolbar" style="display: flex; justify-content: space-between; align-items: center;">
+                        <div style="display: flex; gap: 12px; align-items: center;">
+                            <div class="log-search" style="position: relative;">
+                                <!-- Search SVG -->
+                                <span class="search-icon" style="position: absolute; left: 0.5rem; top: 50%; transform: translateY(-50%); color: #6c757d;">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="#6c757d" stroke-width="2" fill="none"/><line x1="21" y1="21" x2="16.65" y2="16.65" stroke="#6c757d" stroke-width="2"/></svg>
+                                </span>
+                                <input type="text" id="logSearch" placeholder="Search logs..." style="padding-left: 2rem;">
+                                <!-- Clear SVG -->
+                                <span class="search-clear" id="clearSearch" style="position: absolute; right: 0.5rem; top: 50%; transform: translateY(-50%); color: #6c757d; cursor: pointer; display: none;">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18" stroke="#6c757d" stroke-width="2"/><line x1="6" y1="6" x2="18" y2="18" stroke="#6c757d" stroke-width="2"/></svg>
+                                </span>
                             </div>
-                            
-                            <div class="filter-badges d-flex gap-1">
-                                <span class="badge bg-secondary filter-badge active" data-filter="all">All</span>
-                                <span class="badge bg-info text-dark filter-badge" data-filter="info">Info</span>
-                                <span class="badge bg-warning text-dark filter-badge" data-filter="warning">Warning</span>
-                                <span class="badge bg-danger filter-badge" data-filter="error">Error</span>
-                                <span class="badge bg-success filter-badge" data-filter="success">Success</span>
+                            <div class="filter-badges" style="display: flex; gap: 6px;">
+                                <span class="filter-badge active" data-filter="all">All</span>
+                                <span class="filter-badge" data-filter="info">Info</span>
+                                <span class="filter-badge" data-filter="warning">Warning</span>
+                                <span class="filter-badge" data-filter="error">Error</span>
+                                <span class="filter-badge" data-filter="success">Success</span>
                             </div>
                         </div>
-                        
-                        <div class="d-flex align-items-center">
-                            <div class="form-check form-switch me-2">
-                                <input class="form-check-input" type="checkbox" id="autoScrollToggle" checked>
-                                <label class="form-check-label text-light auto-scroll-toggle" for="autoScrollToggle">Auto-scroll</label>
-                            </div>
-                            
-                            <button class="btn btn-sm btn-outline-light btn-icon" id="pauseLogsBtn" title="Pause Log Stream">
-                                <i class="bi bi-pause-fill"></i>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <label class="auto-scroll-toggle" for="autoScrollToggle" style="color:#fff; margin-right:4px;">
+                                <input type="checkbox" id="autoScrollToggle" checked style="vertical-align:middle; margin-right:4px;">
+                                Auto-scroll
+                            </label>
+                            <button class="button button-secondary btn-icon" id="pauseLogsBtn" title="Pause Log Stream">
+                                <!-- Pause SVG -->
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="6" y="4" width="4" height="16" rx="2" fill="#343a40"/><rect x="14" y="4" width="4" height="16" rx="2" fill="#343a40"/></svg>
                             </button>
-                            
-                            <button class="btn btn-sm btn-outline-light btn-icon" id="resumeLogsBtn" title="Resume Log Stream" style="display: none;">
-                                <i class="bi bi-play-fill"></i>
+                            <button class="button button-secondary btn-icon" id="resumeLogsBtn" title="Resume Log Stream" style="display: none;">
+                                <!-- Play SVG -->
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3" fill="#343a40"/></svg>
                             </button>
-                            
-                            <button class="btn btn-sm btn-outline-light btn-icon" id="scrollToBottomBtn" title="Scroll to Bottom">
-                                <i class="bi bi-arrow-down-square"></i>
+                            <button class="button button-secondary btn-icon" id="scrollToBottomBtn" title="Scroll to Bottom">
+                                <!-- Down Arrow SVG -->
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="17" width="16" height="2" rx="1" fill="#343a40"/><polyline points="8 13 12 17 16 13" stroke="#343a40" stroke-width="2" fill="none"/></svg>
                             </button>
                         </div>
                     </div>
-                    
                     <div id="logEntries">
-                        <div id="noLogsMessage">
-                            <i class="bi bi-journal-text" style="font-size: 3rem;"></i>
-                            <p class="mt-3">Waiting for logs...</p>
+                        <div id="noLogsMessage" style="text-align:center; padding:2rem; color:#6c757d;">
+                            <!-- Journal SVG -->
+                            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2" stroke="#dee2e6" stroke-width="2" fill="none"/><path d="M8 8h8M8 12h8M8 16h4" stroke="#dee2e6" stroke-width="2"/></svg>
+                            <p class="task-meta">Waiting for logs...</p>
                         </div>
                     </div>
                 </div>
-            </div>
-            
+            </section>
             <!-- Sidebar -->
-            <div class="col-lg-3">
+            <aside style="flex: 1 1 320px; min-width: 280px;">
                 <div class="status-card">
-                    <h5 class="mb-3"><i class="bi bi-info-circle"></i> System Status</h5>
-                    <div class="d-flex align-items-center mb-2">
+                    <h5 style="margin-bottom: 12px;">
+                        <!-- Info SVG -->
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" stroke="#343a40" stroke-width="2" fill="none"/><circle cx="12" cy="8" r="1.5" fill="#343a40"/><rect x="11" y="11" width="2" height="6" rx="1" fill="#343a40"/></svg>
+                        System Status
+                    </h5>
+                    <div style="display: flex; align-items: center; margin-bottom: 8px;">
                         <span class="status-indicator status-online" id="agentStatus"></span>
                         <span>Agent: </span>
-                        <span class="ms-1" id="agentStatusText">Online</span>
+                        <span id="agentStatusText">Online</span>
                     </div>
-                    <div class="d-flex align-items-center mb-2">
+                    <div style="display: flex; align-items: center; margin-bottom: 8px;">
                         <span class="status-indicator" id="ollamaStatus"></span>
                         <span>Ollama: </span>
-                        <span class="ms-1" id="ollamaStatusText">Checking...</span>
+                        <span id="ollamaStatusText">Checking...</span>
                     </div>
                     <hr>
-                    <div class="mb-2">
+                    <div style="margin-bottom: 8px;">
                         <strong>Current Model:</strong> <span id="currentModel">Loading...</span>
                     </div>
                     <div>
                         <strong>Available Models:</strong>
-                        <div id="availableModels" class="mt-1">
-                            <div class="spinner-border spinner-border-sm text-primary" role="status">
-                                <span class="visually-hidden">Loading...</span>
-                            </div>
-                            <span class="ms-1">Loading models...</span>
+                        <div id="availableModels" style="margin-top: 4px;">
+                            <span class="loader" aria-label="Loading models"></span>
+                            <span style="margin-left: 6px;">Loading models...</span>
                         </div>
                     </div>
                 </div>
-                
                 <div class="status-card">
-                    <h5 class="mb-3"><i class="bi bi-gear"></i> Log Settings</h5>
-                    <div class="mb-3">
-                        <label for="logLimit" class="form-label">Max Logs to Display:</label>
-                        <select class="form-select" id="logLimit">
+                    <h5 style="margin-bottom: 12px;">
+                        <!-- Gear SVG -->
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" stroke="#343a40" stroke-width="2" fill="none"/><path d="M12 8v4l3 3" stroke="#343a40" stroke-width="2"/></svg>
+                        Log Settings
+                    </h5>
+                    <div style="margin-bottom: 12px;">
+                        <label for="logLimit">Max Logs to Display:</label>
+                        <select id="logLimit">
                             <option value="100">100 entries</option>
                             <option value="200">200 entries</option>
                             <option value="500">500 entries</option>
                             <option value="1000">1000 entries</option>
                         </select>
                     </div>
-                    <div class="mb-3">
-                        <label for="refreshRate" class="form-label">Auto-Refresh Rate:</label>
-                        <select class="form-select" id="refreshRate">
+                    <div style="margin-bottom: 12px;">
+                        <label for="refreshRate">Auto-Refresh Rate:</label>
+                        <select id="refreshRate">
                             <option value="1000">1 second</option>
                             <option value="2000">2 seconds</option>
                             <option value="5000" selected>5 seconds</option>
@@ -4086,433 +3604,54 @@ cat > "$WORKDIR/ui/templates/logs.html" <<'HTML'
                             <option value="0">Disabled</option>
                         </select>
                     </div>
-                    <div class="form-check mb-3">
-                        <input class="form-check-input" type="checkbox" id="showTimestamps" checked>
-                        <label class="form-check-label" for="showTimestamps">
+                    <div style="margin-bottom: 12px;">
+                        <label>
+                            <input type="checkbox" id="showTimestamps" checked>
                             Show Timestamps
                         </label>
                     </div>
-                    <div class="form-check mb-3">
-                        <input class="form-check-input" type="checkbox" id="enableHighlighting" checked>
-                        <label class="form-check-label" for="enableHighlighting">
+                    <div style="margin-bottom: 12px;">
+                        <label>
+                            <input type="checkbox" id="enableHighlighting" checked>
                             Enable Log Highlighting
                         </label>
                     </div>
                 </div>
-                
                 <div class="status-card">
-                    <h5 class="mb-3"><i class="bi bi-link-45deg"></i> Quick Links</h5>
-                    <div class="list-group list-group-flush">
-                        <a href="/" class="list-group-item list-group-item-action d-flex align-items-center">
-                            <i class="bi bi-house-fill me-2"></i> Dashboard
-                        </a>
-                        <a href="/history" class="list-group-item list-group-item-action d-flex align-items-center">
-                            <i class="bi bi-clock-history me-2"></i> Task History
-                        </a>
-                        <a href="#" id="refreshSystemStatusBtn" class="list-group-item list-group-item-action d-flex align-items-center">
-                            <i class="bi bi-arrow-clockwise me-2"></i> Refresh Status
-                        </a>
-                    </div>
+                    <h5 style="margin-bottom: 12px;">
+                        <!-- Link SVG -->
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M10 14a5 5 0 0 1 7.07 0l1.41 1.41a5 5 0 0 1-7.07 7.07l-1.41-1.41" stroke="#343a40" stroke-width="2" fill="none"/><path d="M14 10a5 5 0 0 0-7.07 0l-1.41 1.41a5 5 0 0 0 7.07 7.07l1.41-1.41" stroke="#343a40" stroke-width="2" fill="none"/></svg>
+                        Quick Links
+                    </h5>
+                    <ul style="list-style:none; padding:0; margin:0;">
+                        <li>
+                            <a href="/" class="button button-secondary" style="width:100%; margin-bottom:8px; display:flex; align-items:center; gap:8px;">
+                                <!-- Home SVG -->
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 12L12 4l9 8" stroke="#343a40" stroke-width="2" fill="none"/><path d="M5 12v7a2 2 0 002 2h2a2 2 0 002-2v-3h2v3a2 2 0 002 2h2a2 2 0 002-2v-7" stroke="#343a40" stroke-width="2" fill="none"/></svg>
+                                Dashboard
+                            </a>
+                        </li>
+                        <li>
+                            <a href="/history" class="button button-secondary" style="width:100%; margin-bottom:8px; display:flex; align-items:center; gap:8px;">
+                                <!-- Clock SVG -->
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" stroke="#343a40" stroke-width="2" fill="none"/><path d="M12 7v5l4 2" stroke="#343a40" stroke-width="2"/></svg>
+                                Task History
+                            </a>
+                        </li>
+                        <li>
+                            <a href="#" id="refreshSystemStatusBtn" class="button button-secondary" style="width:100%; display:flex; align-items:center; gap:8px;">
+                                <!-- Refresh SVG -->
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 4v6h6" stroke="#343a40" stroke-width="2" fill="none"/><path d="M20 20v-6h-6" stroke="#343a40" stroke-width="2" fill="none"/><path d="M5 19A9 9 0 1 1 19 5" stroke="#343a40" stroke-width="2" fill="none"/></svg>
+                                Refresh Status
+                            </a>
+                        </li>
+                    </ul>
                 </div>
-            </div>
+            </aside>
         </div>
-    </div>
+    </main>
 
-    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-    <script src="/static/js/bootstrap.bundle.min.js"></script>
-    <script>
-        $(document).ready(function() {
-            // Variables
-            let logEntries = [];
-            let filteredEntries = [];
-            let paused = false;
-            let filterType = 'all';
-            let searchTerm = '';
-            let autoScroll = true;
-            let eventSource = null;
-            let logCounts = {
-                total: 0,
-                info: 0,
-                warning: 0,
-                error: 0,
-                success: 0
-            };
-            
-            // Elements
-            const logEntriesContainer = $('#logEntries');
-            const noLogsMessage = $('#noLogsMessage');
-            const logSearch = $('#logSearch');
-            const clearSearch = $('#clearSearch');
-            const filterBadges = $('.filter-badge');
-            const autoScrollToggle = $('#autoScrollToggle');
-            const pauseLogsBtn = $('#pauseLogsBtn');
-            const resumeLogsBtn = $('#resumeLogsBtn');
-            const scrollToBottomBtn = $('#scrollToBottomBtn');
-            const clearLogsBtn = $('#clearLogsBtn');
-            const downloadLogsBtn = $('#downloadLogsBtn');
-            const logLimit = $('#logLimit');
-            const refreshRate = $('#refreshRate');
-            const showTimestamps = $('#showTimestamps');
-            const enableHighlighting = $('#enableHighlighting');
-            
-            // Initialize system status and log stream
-            loadSystemStatus();
-            initLogStream();
-            
-            // Function to determine log level class
-            function getLogLevelClass(message) {
-                const lowerMessage = message.toLowerCase();
-                
-                if (lowerMessage.includes('error') || lowerMessage.includes('fail') || lowerMessage.includes('exception')) {
-                    return 'log-error';
-                } else if (lowerMessage.includes('warn')) {
-                    return 'log-warning';
-                } else if (lowerMessage.includes('success') || lowerMessage.includes('completed') || lowerMessage.includes('done')) {
-                    return 'log-success';
-                } else {
-                    return 'log-info';
-                }
-            }
-            
-            // Function to format timestamp
-            function formatTimestamp(timestamp) {
-                const date = new Date(timestamp);
-                const hours = date.getHours().toString().padStart(2, '0');
-                const minutes = date.getMinutes().toString().padStart(2, '0');
-                const seconds = date.getSeconds().toString().padStart(2, '0');
-                const ms = date.getMilliseconds().toString().padStart(3, '0');
-                
-                return `${hours}:${minutes}:${seconds}.${ms}`;
-            }
-            
-            // Function to add log entry
-            function addLogEntry(entry) {
-                // Add to log entries array
-                logEntries.push(entry);
-                
-                // Limit the number of entries
-                const maxEntries = parseInt(logLimit.val());
-                if (logEntries.length > maxEntries) {
-                    logEntries = logEntries.slice(-maxEntries);
-                }
-                
-                // Update log counts
-                logCounts.total = logEntries.length;
-                
-                // Count by type
-                logCounts.info = 0;
-                logCounts.warning = 0;
-                logCounts.error = 0;
-                logCounts.success = 0;
-                
-                logEntries.forEach(entry => {
-                    const logClass = getLogLevelClass(entry.message);
-                    if (logClass === 'log-info') logCounts.info++;
-                    else if (logClass === 'log-warning') logCounts.warning++;
-                    else if (logClass === 'log-error') logCounts.error++;
-                    else if (logClass === 'log-success') logCounts.success++;
-                });
-                
-                // Update count display
-                $('#totalLogCount').text(logCounts.total);
-                $('#infoLogCount').text(logCounts.info);
-                $('#warningLogCount').text(logCounts.warning);
-                $('#errorLogCount').text(logCounts.error);
-                
-                // Filter and display logs
-                filterLogs();
-            }
-            
-            // Function to filter logs
-            function filterLogs() {
-                // Apply filters
-                filteredEntries = logEntries.filter(entry => {
-                    const logClass = getLogLevelClass(entry.message);
-                    const matchesFilter = filterType === 'all' || 
-                                        (filterType === 'info' && logClass === 'log-info') ||
-                                        (filterType === 'warning' && logClass === 'log-warning') ||
-                                        (filterType === 'error' && logClass === 'log-error') ||
-                                        (filterType === 'success' && logClass === 'log-success');
-                    
-                    const matchesSearch = searchTerm === '' || 
-                                        entry.message.toLowerCase().includes(searchTerm.toLowerCase());
-                    
-                    return matchesFilter && matchesSearch;
-                });
-                
-                // Render filtered logs
-                renderLogs();
-            }
-            
-            // Function to render logs
-            function renderLogs() {
-                // Clear existing logs
-                logEntriesContainer.empty();
-                
-                if (filteredEntries.length === 0) {
-                    noLogsMessage.show();
-                } else {
-                    noLogsMessage.hide();
-                    
-                    // Add entries
-                    filteredEntries.forEach(entry => {
-                        const timestamp = showTimestamps.is(':checked') ? 
-                                        `<span class="log-timestamp">[${formatTimestamp(entry.timestamp)}]</span>` : '';
-                        
-                        const logClass = enableHighlighting.is(':checked') ? 
-                                        getLogLevelClass(entry.message) : '';
-                        
-                        const logHtml = `
-                            <div class="log-entry ${logClass}">
-                                ${timestamp}${entry.message}
-                            </div>
-                        `;
-                        
-                        logEntriesContainer.append(logHtml);
-                    });
-                    
-                    // Scroll to bottom if auto-scroll is enabled
-                    if (autoScroll) {
-                        const container = $('.log-container');
-                        container.scrollTop(container[0].scrollHeight);
-                    }
-                }
-            }
-            
-            // Function to initialize log stream
-            function initLogStream() {
-                // Close existing event source if open
-                if (eventSource) {
-                    eventSource.close();
-                }
-                
-                // Create new event source
-                eventSource = new EventSource('/logs/stream');
-                
-                // Handle initial logs
-                eventSource.addEventListener('logs', function(event) {
-                    const logs = JSON.parse(event.data);
-                    
-                    logs.forEach(log => {
-                        addLogEntry(log);
-                    });
-                });
-                
-                // Handle log events
-                eventSource.addEventListener('log', function(event) {
-                    if (!paused) {
-                        const log = JSON.parse(event.data);
-                        addLogEntry(log);
-                    }
-                });
-                
-                // Handle heartbeat events
-                eventSource.addEventListener('heartbeat', function(event) {
-                    // Heartbeat received, connection is alive
-                });
-                
-                // Handle errors
-                eventSource.onerror = function(error) {
-                    console.error('EventSource error:', error);
-                    
-                    // Try to reconnect after a delay
-                    setTimeout(function() {
-                        initLogStream();
-                    }, 5000);
-                };
-            }
-            
-            // Function to load system status
-            function loadSystemStatus() {
-                $.ajax({
-                    url: '/api/status',
-                    method: 'GET',
-                    success: function(data) {
-                        // Update Ollama status
-                        if (data.ollama === 'running') {
-                            $('#ollamaStatus').removeClass('status-offline').addClass('status-online');
-                            $('#ollamaStatusText').text('Online');
-                        } else {
-                            $('#ollamaStatus').removeClass('status-online').addClass('status-offline');
-                            $('#ollamaStatusText').text('Offline');
-                        }
-                        
-                        // Update current model
-                        $('#currentModel').text(data.current_model);
-                        
-                        // Update available models
-                        if (data.models && data.models.length > 0) {
-                            const modelsContainer = $('#availableModels');
-                            modelsContainer.empty();
-                            
-                            data.models.forEach(model => {
-                                modelsContainer.append(`
-                                    <span class="badge model-badge">${model}</span>
-                                `);
-                            });
-                        } else {
-                            $('#availableModels').html('<span class="text-muted">No models available</span>');
-                        }
-                    },
-                    error: function(xhr, status, error) {
-                        console.error('Error loading system status:', error);
-                        
-                        // Update status indicators to offline
-                        $('#ollamaStatus').removeClass('status-online').addClass('status-offline');
-                        $('#ollamaStatusText').text('Error connecting');
-                    }
-                });
-            }
-            
-            // Search functionality
-            logSearch.on('input', function() {
-                searchTerm = $(this).val();
-                
-                if (searchTerm === '') {
-                    clearSearch.hide();
-                } else {
-                    clearSearch.show();
-                }
-                
-                filterLogs();
-            });
-            
-            // Clear search
-            clearSearch.on('click', function() {
-                logSearch.val('');
-                searchTerm = '';
-                clearSearch.hide();
-                filterLogs();
-            });
-            
-            // Filter badges
-            filterBadges.on('click', function() {
-                filterBadges.removeClass('active');
-                $(this).addClass('active');
-                
-                filterType = $(this).data('filter');
-                filterLogs();
-            });
-            
-            // Auto-scroll toggle
-            autoScrollToggle.on('change', function() {
-                autoScroll = $(this).is(':checked');
-                
-                if (autoScroll) {
-                    const container = $('.log-container');
-                    container.scrollTop(container[0].scrollHeight);
-                }
-            });
-            
-            // Pause/Resume logs
-            pauseLogsBtn.on('click', function() {
-                paused = true;
-                pauseLogsBtn.hide();
-                resumeLogsBtn.show();
-            });
-            
-            resumeLogsBtn.on('click', function() {
-                paused = false;
-                resumeLogsBtn.hide();
-                pauseLogsBtn.show();
-            });
-            
-            // Scroll to bottom
-            scrollToBottomBtn.on('click', function() {
-                const container = $('.log-container');
-                container.scrollTop(container[0].scrollHeight);
-            });
-            
-            // Clear logs
-            clearLogsBtn.on('click', function() {
-                if (confirm('Are you sure you want to clear all logs from the view? This will not delete logs from the server.')) {
-                    logEntries = [];
-                    filteredEntries = [];
-                    logCounts = {
-                        total: 0,
-                        info: 0,
-                        warning: 0,
-                        error: 0,
-                        success: 0
-                    };
-                    
-                    // Update count display
-                    $('#totalLogCount').text(0);
-                    $('#infoLogCount').text(0);
-                    $('#warningLogCount').text(0);
-                    $('#errorLogCount').text(0);
-                    
-                    renderLogs();
-                }
-            });
-            
-            // Download logs
-            downloadLogsBtn.on('click', function() {
-                // Create log content
-                let content = '';
-                
-                logEntries.forEach(entry => {
-                    content += `[${formatTimestamp(entry.timestamp)}] ${entry.message}\n`;
-                });
-                
-                // Create blob and download
-                const blob = new Blob([content], { type: 'text/plain' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                const date = new Date().toISOString().replace(/:/g, '-').split('.')[0];
-                
-                a.href = url;
-                a.download = `infinite_ai_logs_${date}.txt`;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                URL.revokeObjectURL(url);
-            });
-            
-            // Log limit change
-            logLimit.on('change', function() {
-                const maxEntries = parseInt($(this).val());
-                
-                // Limit the number of entries
-                if (logEntries.length > maxEntries) {
-                    logEntries = logEntries.slice(-maxEntries);
-                    filterLogs();
-                }
-            });
-            
-            // Refresh rate change
-            refreshRate.on('change', function() {
-                const rate = parseInt($(this).val());
-                
-                // If disabled, pause logs
-                if (rate === 0) {
-                    paused = true;
-                    pauseLogsBtn.hide();
-                    resumeLogsBtn.show();
-                } else {
-                    paused = false;
-                    resumeLogsBtn.hide();
-                    pauseLogsBtn.show();
-                }
-            });
-            
-            // Show timestamps change
-            showTimestamps.on('change', function() {
-                renderLogs();
-            });
-            
-            // Enable highlighting change
-            enableHighlighting.on('change', function() {
-                renderLogs();
-            });
-            
-            // Refresh system status
-            $('#refreshSystemStatusBtn').on('click', function(e) {
-                e.preventDefault();
-                loadSystemStatus();
-            });
-        });
-    </script>
+    <script src="/static/app.js"></script>
 </body>
 </html>
 HTML
@@ -5077,24 +4216,37 @@ cat > "$WORKDIR/ui/templates/task_logs.html" <<'HTML'
     </style>
 </head>
 <body>
-    <nav class="navbar">
-        <div class="container">
-            <a class="navbar-brand" href="/">
-                🤖 Infinite AI Agent
-            </a>
-            <ul class="navbar-nav">
-                <li class="nav-item">
-                    <a class="nav-link" href="/">🏠 Home</a>
-                </li>
-                <li class="nav-item">
-                    <a class="nav-link" href="/logs">📋 System Logs</a>
-                </li>
-                <li class="nav-item">
-                    <a class="nav-link" href="/history">⏱️ Task History</a>
-                </li>
-            </ul>
+    <header>
+        <div class="logo" aria-label="Infinite AI Agent">
+            <!-- Robot SVG Icon -->
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false">
+                <rect x="3" y="7" width="18" height="12" rx="4" fill="#343a40"/>
+                <circle cx="8" cy="13" r="2" fill="#fff"/>
+                <circle cx="16" cy="13" r="2" fill="#fff"/>
+                <rect x="10.5" y="3" width="3" height="4" rx="1.5" fill="#343a40"/>
+            </svg>
+            <span>Infinite AI Agent</span>
         </div>
-    </nav>
+        <nav aria-label="Main navigation">
+            <ul>
+                <li><a href="/">
+                    <!-- Home SVG -->
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 12L12 4l9 8" stroke="#343a40" stroke-width="2" fill="none"/><path d="M5 12v7a2 2 0 002 2h2a2 2 0 002-2v-3h2v3a2 2 0 002 2h2a2 2 0 002-2v-7" stroke="#343a40" stroke-width="2" fill="none"/></svg>
+                    Home
+                </a></li>
+                <li><a href="/logs">
+                    <!-- Logs SVG -->
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2" stroke="#343a40" stroke-width="2" fill="none"/><path d="M8 8h8M8 12h8M8 16h4" stroke="#343a40" stroke-width="2"/></svg>
+                    System Logs
+                </a></li>
+                <li><a href="/history">
+                    <!-- History SVG -->
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" stroke="#343a40" stroke-width="2" fill="none"/><path d="M12 6v6l4 2" stroke="#343a40" stroke-width="2"/></svg>
+                    Task History
+                </a></li>
+            </ul>
+        </nav>
+    </header>
 
     <div class="container py-4">
         <div class="row">
@@ -5105,17 +4257,25 @@ cat > "$WORKDIR/ui/templates/task_logs.html" <<'HTML'
                 </div>
 
                 <div class="task-controls-row">
-                    <a href="/" class="btn btn-outline-secondary">
-                        <i class="bi bi-arrow-left"></i> Back to Dashboard
+                    <a href="/" class="button button-secondary">
+                        <!-- Left Arrow SVG -->
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M15 18l-6-6 6-6" stroke="#343a40" stroke-width="2" fill="none"/></svg>
+                        Back to Dashboard
                     </a>
-                    <a href="/task_logs/{{ task_id }}" class="btn btn-outline-primary ms-2 task-logs-btn">
-                        <i class="bi bi-file-text"></i> View Detailed Logs
+                    <a href="/task_logs/{{ task_id }}" class="button button-secondary task-logs-btn" style="margin-left:8px;">
+                        <!-- File Text SVG -->
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2" stroke="#343a40" stroke-width="2" fill="none"/><line x1="8" y1="8" x2="16" y2="8" stroke="#343a40" stroke-width="2"/><line x1="8" y1="12" x2="16" y2="12" stroke="#343a40" stroke-width="2"/><line x1="8" y1="16" x2="12" y2="16" stroke="#343a40" stroke-width="2"/></svg>
+                        View Detailed Logs
                     </a>
                 </div>
 
                 <div class="info-panel">
-                    <div class="info-heading d-flex justify-content-between align-items-center">
-                        <span><i class="bi bi-info-circle"></i> Task Information</span>
+                    <div class="info-heading" style="display:flex; justify-content:space-between; align-items:center;">
+                        <span>
+                            <!-- Info SVG -->
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" stroke="#343a40" stroke-width="2" fill="none"/><circle cx="12" cy="8" r="1.5" fill="#343a40"/><rect x="11" y="11" width="2" height="6" rx="1" fill="#343a40"/></svg>
+                            Task Information
+                        </span>
                         <span class="badge status-badge" id="taskStatusBadge">Loading...</span>
                     </div>
                     <ul class="info-list">
@@ -5151,7 +4311,9 @@ cat > "$WORKDIR/ui/templates/task_logs.html" <<'HTML'
 
                 <div class="info-panel">
                     <div class="info-heading">
-                        <i class="bi bi-hdd-rack"></i> Environment
+                        <!-- HDD SVG -->
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="7" width="18" height="10" rx="2" stroke="#343a40" stroke-width="2" fill="none"/><circle cx="8" cy="12" r="1" fill="#343a40"/><circle cx="16" cy="12" r="1" fill="#343a40"/></svg>
+                        Environment
                     </div>
                     <div id="environmentDetails" class="env-list">
                         <div class="text-center py-3">
@@ -5165,14 +4327,20 @@ cat > "$WORKDIR/ui/templates/task_logs.html" <<'HTML'
 
                 <div class="info-panel">
                     <div class="info-heading">
-                        <i class="bi bi-tools"></i> Task Controls
+                        <!-- Tools SVG -->
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 1 1.4 1.4l-8 8a1 1 0 0 1-1.4-1.4l8-8z" stroke="#343a40" stroke-width="2" fill="none"/><path d="M17 2l5 5-4 4-5-5z" stroke="#343a40" stroke-width="2" fill="none"/><path d="M2 22l5-5" stroke="#343a40" stroke-width="2" fill="none"/></svg>
+                        Task Controls
                     </div>
                     <div class="d-grid gap-2">
-                        <button class="btn btn-outline-primary" id="refreshBtn">
-                            <i class="bi bi-arrow-clockwise"></i> Refresh Status
+                        <button class="button button-secondary" id="refreshBtn">
+                            <!-- Refresh SVG -->
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 4v6h6" stroke="#343a40" stroke-width="2" fill="none"/><path d="M20 20v-6h-6" stroke="#343a40" stroke-width="2" fill="none"/><path d="M5 19A9 9 0 1 1 19 5" stroke="#343a40" stroke-width="2" fill="none"/></svg>
+                            Refresh Status
                         </button>
-                        <button class="btn btn-outline-danger" id="cancelBtn" disabled>
-                            <i class="bi bi-x-circle"></i> Cancel Task
+                        <button class="button button-danger" id="cancelBtn" disabled>
+                            <!-- X SVG -->
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" stroke="#dc3545" stroke-width="2" fill="none"/><line x1="8" y1="8" x2="16" y2="16" stroke="#dc3545" stroke-width="2"/><line x1="16" y1="8" x2="8" y2="16" stroke="#dc3545" stroke-width="2"/></svg>
+                            Cancel Task
                         </button>
                     </div>
                 </div>
@@ -5181,68 +4349,73 @@ cat > "$WORKDIR/ui/templates/task_logs.html" <<'HTML'
             <!-- Right Column - Terminal Output -->
             <div class="col-9">
                 <div class="card border-0 shadow-sm">
-                    <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center py-3">
-                        <h5 class="mb-0">
-                            💻 Task Execution
+                    <div class="card-header" style="background:#343a40; color:#fff; display:flex; justify-content:space-between; align-items:center; padding:1rem;">
+                        <h5 class="mb-0" style="display:flex; align-items:center; gap:10px;">
+                            <!-- Terminal SVG -->
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" stroke="#fff" stroke-width="2" fill="none"/><polyline points="8 9 12 13 16 9" stroke="#fff" stroke-width="2" fill="none"/></svg>
+                            Task Execution
                             <span class="step-indicator" id="taskProgress">Step <span id="currentStep">0</span> of <span id="totalSteps">?</span></span>
                         </h5>
-                        <div>
-                            <div class="form-check form-switch d-inline-block me-2">
-                                <input class="form-check-input" type="checkbox" id="autoScrollToggle" checked>
-                                <label class="form-check-label text-white" for="autoScrollToggle">Auto-scroll</label>
-                            </div>
-                            <button class="btn btn-outline-light" id="scrollToBottomBtn">
-                                ⬇️
+                        <div style="display:flex; align-items:center; gap:10px;">
+                            <label class="auto-scroll-toggle" for="autoScrollToggle" style="color:#fff;">
+                                <input type="checkbox" id="autoScrollToggle" checked style="vertical-align:middle; margin-right:4px;">
+                                Auto-scroll
+                            </label>
+                            <button class="button button-secondary btn-icon" id="scrollToBottomBtn" title="Scroll to Bottom">
+                                <!-- Down Arrow SVG -->
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="17" width="16" height="2" rx="1" fill="#fff"/><polyline points="8 13 12 17 16 13" stroke="#fff" stroke-width="2" fill="none"/></svg>
                             </button>
                         </div>
                     </div>
 
                     <div class="card-body p-0">
-                        <ul class="nav nav-tabs terminal-mode-tabs" id="outputModeTabs">
-                            <li class="nav-item">
-                                <a class="nav-link active" id="formatted-tab" data-bs-toggle="tab" href="#formatted">Formatted Output</a>
-                            </li>
-                            <li class="nav-item">
-                                <a class="nav-link" id="raw-tab" data-bs-toggle="tab" href="#raw">Raw Output</a>
-                            </li>
-                        </ul>
+                        <div class="terminal-mode-tabs" style="margin-bottom:1rem;">
+                            <button class="button button-secondary" id="formatted-tab" aria-controls="formatted" aria-selected="true" style="margin-right:8px;">Formatted Output</button>
+                            <button class="button button-secondary" id="raw-tab" aria-controls="raw" aria-selected="false">Raw Output</button>
+                        </div>
 
-                        <div class="tab-content">
-                            <div class="tab-pane fade show active" id="formatted">
-                                <div class="terminal">
-                                    <div class="terminal-actions">
-                                        <button id="copyBtn" title="Copy to clipboard">
-                                            📋 Copy
-                                        </button>
-                                        <button id="downloadBtn" title="Download output">
-                                            💾 Download
-                                        </button>
-                                        <button id="clearBtn" title="Clear terminal">
-                                            🗑️ Clear
-                                        </button>
-                                    </div>
-                                    <div class="terminal-output" id="terminalOutput">
-                                        <div class="text-center py-5" id="loadingOutput">
-                                            <div class="spinner" role="status">
-                                                <span class="visually-hidden">Loading...</span>
-                                            </div>
-                                            <p class="mt-3 text-muted">Loading task output...</p>
-                                        </div>
+                        <div id="formatted" class="tab-pane active">
+                            <div class="terminal">
+                                <div class="terminal-actions">
+                                    <button id="copyBtn" title="Copy to clipboard" class="button button-secondary btn-icon">
+                                        <!-- Clipboard SVG -->
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="7" y="3" width="10" height="4" rx="2" stroke="#343a40" stroke-width="2" fill="none"/><rect x="5" y="7" width="14" height="14" rx="2" stroke="#343a40" stroke-width="2" fill="none"/></svg>
+                                        Copy
+                                    </button>
+                                    <button id="downloadBtn" title="Download output" class="button button-secondary btn-icon">
+                                        <!-- Download SVG -->
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3v12m0 0l-4-4m4 4l4-4" stroke="#343a40" stroke-width="2" fill="none"/><rect x="4" y="17" width="16" height="4" rx="2" stroke="#343a40" stroke-width="2" fill="none"/></svg>
+                                        Download
+                                    </button>
+                                    <button id="clearBtn" title="Clear terminal" class="button button-danger btn-icon">
+                                        <!-- Trash SVG -->
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="6" width="18" height="15" rx="2" stroke="#dc3545" stroke-width="2" fill="none"/><path d="M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2" stroke="#dc3545" stroke-width="2" fill="none"/><line x1="10" y1="11" x2="10" y2="17" stroke="#dc3545" stroke-width="2"/><line x1="14" y1="11" x2="14" y2="17" stroke="#dc3545" stroke-width="2"/></svg>
+                                        Clear
+                                    </button>
+                                </div>
+                                <div class="terminal-output" id="terminalOutput">
+                                    <div style="text-align:center; padding:3rem 0;" id="loadingOutput">
+                                        <span class="loader" aria-label="Loading..."></span>
+                                        <p class="task-meta">Loading task output...</p>
                                     </div>
                                 </div>
                             </div>
-                            <div class="tab-pane fade" id="raw">
-                                <div class="terminal">
-                                    <div class="terminal-actions">
-                                        <button id="rawCopyBtn" title="Copy raw output">
-                                            📋 Copy
-                                        </button>
-                                        <button id="rawDownloadBtn" title="Download raw output">
-                                            💾 Download
-                                        </button>
-                                    </div>
-                                    <pre id="rawOutput" class="mb-0">Loading raw output...</pre>
+                        </div>
+                        <div id="raw" class="tab-pane" style="display:none;">
+                            <div class="terminal">
+                                <div class="terminal-actions">
+                                    <button id="rawCopyBtn" title="Copy raw output" class="button button-secondary btn-icon">
+                                        <!-- Clipboard SVG -->
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="7" y="3" width="10" height="4" rx="2" stroke="#343a40" stroke-width="2" fill="none"/><rect x="5" y="7" width="14" height="14" rx="2" stroke="#343a40" stroke-width="2" fill="none"/></svg>
+                                        Copy
+                                    </button>
+                                    <button id="rawDownloadBtn" title="Download raw output" class="button button-secondary btn-icon">
+                                        <!-- Download SVG -->
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3v12m0 0l-4-4m4 4l4-4" stroke="#343a40" stroke-width="2" fill="none"/><rect x="4" y="17" width="16" height="4" rx="2" stroke="#343a40" stroke-width="2" fill="none"/></svg>
+                                        Download
+                                    </button>
                                 </div>
+                                <pre id="rawOutput" class="mb-0">Loading raw output...</pre>
                             </div>
                         </div>
                     </div>
@@ -5797,8 +4970,7 @@ cat > "$WORKDIR/ui/templates/task.html" <<'HTML'
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Infinite AI - Task Details</title>
-    <link rel="stylesheet" href="/static/css/bootstrap.min.css">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="/static/styles.css">
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -6011,29 +5183,37 @@ cat > "$WORKDIR/ui/templates/task.html" <<'HTML'
     </style>
 </head>
 <body>
-    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
-        <div class="container-fluid">
-            <a class="navbar-brand" href="/">
-                <i class="bi bi-robot"></i> Infinite AI Agent
-            </a>
-            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
-                <span class="navbar-toggler-icon"></span>
-            </button>
-            <div class="collapse navbar-collapse" id="navbarNav">
-                <ul class="navbar-nav">
-                    <li class="nav-item">
-                        <a class="nav-link" href="/"><i class="bi bi-house-fill"></i> Home</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="/logs"><i class="bi bi-journal-text"></i> System Logs</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="/history"><i class="bi bi-clock-history"></i> Task History</a>
-                    </li>
-                </ul>
-            </div>
+    <header>
+        <div class="logo" aria-label="Infinite AI Agent">
+            <!-- Robot SVG Icon -->
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false">
+                <rect x="3" y="7" width="18" height="12" rx="4" fill="#343a40"/>
+                <circle cx="8" cy="13" r="2" fill="#fff"/>
+                <circle cx="16" cy="13" r="2" fill="#fff"/>
+                <rect x="10.5" y="3" width="3" height="4" rx="1.5" fill="#343a40"/>
+            </svg>
+            <span>Infinite AI Agent</span>
         </div>
-    </nav>
+        <nav aria-label="Main navigation">
+            <ul>
+                <li><a href="/">
+                    <!-- Home SVG -->
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 12L12 4l9 8" stroke="#343a40" stroke-width="2" fill="none"/><path d="M5 12v7a2 2 0 002 2h2a2 2 0 002-2v-3h2v3a2 2 0 002 2h2a2 2 0 002-2v-7" stroke="#343a40" stroke-width="2" fill="none"/></svg>
+                    Home
+                </a></li>
+                <li><a href="/logs">
+                    <!-- Logs SVG -->
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2" stroke="#343a40" stroke-width="2" fill="none"/><path d="M8 8h8M8 12h8M8 16h4" stroke="#343a40" stroke-width="2"/></svg>
+                    System Logs
+                </a></li>
+                <li><a href="/history">
+                    <!-- History SVG -->
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" stroke="#343a40" stroke-width="2" fill="none"/><path d="M12 6v6l4 2" stroke="#343a40" stroke-width="2"/></svg>
+                    Task History
+                </a></li>
+            </ul>
+        </nav>
+    </header>
 
     <div class="container-fluid py-4">
         <div class="row">
@@ -6044,17 +5224,25 @@ cat > "$WORKDIR/ui/templates/task.html" <<'HTML'
                 </div>
                 
                 <div class="task-controls-row">
-                    <a href="/" class="btn btn-outline-secondary">
-                        <i class="bi bi-arrow-left"></i> Back to Dashboard
+                    <a href="/" class="button button-secondary">
+                        <!-- Left Arrow SVG -->
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M15 18l-6-6 6-6" stroke="#343a40" stroke-width="2" fill="none"/></svg>
+                        Back to Dashboard
                     </a>
-                    <a href="/task_logs/{{ task_id }}" class="btn btn-outline-primary ms-2 task-logs-btn">
-                        <i class="bi bi-file-text"></i> View Detailed Logs
+                    <a href="/task_logs/{{ task_id }}" class="button button-secondary task-logs-btn" style="margin-left:8px;">
+                        <!-- File Text SVG -->
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2" stroke="#343a40" stroke-width="2" fill="none"/><line x1="8" y1="8" x2="16" y2="8" stroke="#343a40" stroke-width="2"/><line x1="8" y1="12" x2="16" y2="12" stroke="#343a40" stroke-width="2"/><line x1="8" y1="16" x2="12" y2="16" stroke="#343a40" stroke-width="2"/></svg>
+                        View Detailed Logs
                     </a>
                 </div>
                 
                 <div class="info-panel">
-                    <div class="info-heading d-flex justify-content-between align-items-center">
-                        <span><i class="bi bi-info-circle"></i> Task Information</span>
+                    <div class="info-heading" style="display:flex; justify-content:space-between; align-items:center;">
+                        <span>
+                            <!-- Info SVG -->
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" stroke="#343a40" stroke-width="2" fill="none"/><circle cx="12" cy="8" r="1.5" fill="#343a40"/><rect x="11" y="11" width="2" height="6" rx="1" fill="#343a40"/></svg>
+                            Task Information
+                        </span>
                         <span class="badge status-badge" id="taskStatusBadge">Loading...</span>
                     </div>
                     <ul class="info-list">
@@ -6090,7 +5278,9 @@ cat > "$WORKDIR/ui/templates/task.html" <<'HTML'
                 
                 <div class="info-panel">
                     <div class="info-heading">
-                        <i class="bi bi-hdd-rack"></i> Environment
+                        <!-- HDD SVG -->
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="7" width="18" height="10" rx="2" stroke="#343a40" stroke-width="2" fill="none"/><circle cx="8" cy="12" r="1" fill="#343a40"/><circle cx="16" cy="12" r="1" fill="#343a40"/></svg>
+                        Environment
                     </div>
                     <div id="environmentDetails" class="env-list">
                         <div class="text-center py-3">
@@ -6104,14 +5294,20 @@ cat > "$WORKDIR/ui/templates/task.html" <<'HTML'
                 
                 <div class="info-panel">
                     <div class="info-heading">
-                        <i class="bi bi-tools"></i> Task Controls
+                        <!-- Tools SVG -->
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 1 1.4 1.4l-8 8a1 1 0 0 1-1.4-1.4l8-8z" stroke="#343a40" stroke-width="2" fill="none"/><path d="M17 2l5 5-4 4-5-5z" stroke="#343a40" stroke-width="2" fill="none"/><path d="M2 22l5-5" stroke="#343a40" stroke-width="2" fill="none"/></svg>
+                        Task Controls
                     </div>
                     <div class="d-grid gap-2">
-                        <button class="btn btn-outline-primary" id="refreshBtn">
-                            <i class="bi bi-arrow-clockwise"></i> Refresh Status
+                        <button class="button button-secondary" id="refreshBtn">
+                            <!-- Refresh SVG -->
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 4v6h6" stroke="#343a40" stroke-width="2" fill="none"/><path d="M20 20v-6h-6" stroke="#343a40" stroke-width="2" fill="none"/><path d="M5 19A9 9 0 1 1 19 5" stroke="#343a40" stroke-width="2" fill="none"/></svg>
+                            Refresh Status
                         </button>
-                        <button class="btn btn-outline-danger" id="cancelBtn" disabled>
-                            <i class="bi bi-x-circle"></i> Cancel Task
+                        <button class="button button-danger" id="cancelBtn" disabled>
+                            <!-- X SVG -->
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" stroke="#dc3545" stroke-width="2" fill="none"/><line x1="8" y1="8" x2="16" y2="16" stroke="#dc3545" stroke-width="2"/><line x1="16" y1="8" x2="8" y2="16" stroke="#dc3545" stroke-width="2"/></svg>
+                            Cancel Task
                         </button>
                     </div>
                 </div>
@@ -6120,68 +5316,73 @@ cat > "$WORKDIR/ui/templates/task.html" <<'HTML'
             <!-- Right Column - Terminal Output -->
             <div class="col-lg-9">
                 <div class="card border-0 shadow-sm">
-                    <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center py-3">
-                        <h5 class="mb-0">
-                            <i class="bi bi-terminal"></i> Task Execution
+                    <div class="card-header" style="background:#343a40; color:#fff; display:flex; justify-content:space-between; align-items:center; padding:1rem;">
+                        <h5 class="mb-0" style="display:flex; align-items:center; gap:10px;">
+                            <!-- Terminal SVG -->
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" stroke="#fff" stroke-width="2" fill="none"/><polyline points="8 9 12 13 16 9" stroke="#fff" stroke-width="2" fill="none"/></svg>
+                            Task Execution
                             <span class="step-indicator" id="taskProgress">Step <span id="currentStep">0</span> of <span id="totalSteps">?</span></span>
                         </h5>
-                        <div>
-                            <div class="form-check form-switch d-inline-block me-2">
-                                <input class="form-check-input" type="checkbox" id="autoScrollToggle" checked>
-                                <label class="form-check-label text-white" for="autoScrollToggle">Auto-scroll</label>
-                            </div>
-                            <button class="btn btn-sm btn-outline-light ms-2" id="scrollToBottomBtn">
-                                <i class="bi bi-arrow-down"></i>
+                        <div style="display:flex; align-items:center; gap:10px;">
+                            <label class="auto-scroll-toggle" for="autoScrollToggle" style="color:#fff;">
+                                <input type="checkbox" id="autoScrollToggle" checked style="vertical-align:middle; margin-right:4px;">
+                                Auto-scroll
+                            </label>
+                            <button class="button button-secondary btn-icon" id="scrollToBottomBtn" title="Scroll to Bottom">
+                                <!-- Down Arrow SVG -->
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="17" width="16" height="2" rx="1" fill="#fff"/><polyline points="8 13 12 17 16 13" stroke="#fff" stroke-width="2" fill="none"/></svg>
                             </button>
                         </div>
                     </div>
                     
                     <div class="card-body p-0">
-                        <ul class="nav nav-tabs terminal-mode-tabs" id="outputModeTabs">
-                            <li class="nav-item">
-                                <a class="nav-link active" id="formatted-tab" data-bs-toggle="tab" href="#formatted">Formatted Output</a>
-                            </li>
-                            <li class="nav-item">
-                                <a class="nav-link" id="raw-tab" data-bs-toggle="tab" href="#raw">Raw Output</a>
-                            </li>
-                        </ul>
+                        <div class="terminal-mode-tabs" style="margin-bottom:1rem;">
+                            <button class="button button-secondary" id="formatted-tab" aria-controls="formatted" aria-selected="true" style="margin-right:8px;">Formatted Output</button>
+                            <button class="button button-secondary" id="raw-tab" aria-controls="raw" aria-selected="false">Raw Output</button>
+                        </div>
                         
-                        <div class="tab-content">
-                            <div class="tab-pane fade show active" id="formatted">
-                                <div class="terminal">
-                                    <div class="terminal-actions">
-                                        <button id="copyBtn" title="Copy to clipboard">
-                                            <i class="bi bi-clipboard"></i> Copy
-                                        </button>
-                                        <button id="downloadBtn" title="Download output">
-                                            <i class="bi bi-download"></i> Download
-                                        </button>
-                                        <button id="clearBtn" title="Clear terminal">
-                                            <i class="bi bi-trash"></i> Clear
-                                        </button>
-                                    </div>
-                                    <div class="terminal-output" id="terminalOutput">
-                                        <div class="text-center py-5" id="loadingOutput">
-                                            <div class="spinner-border text-light" role="status">
-                                                <span class="visually-hidden">Loading...</span>
-                                            </div>
-                                            <p class="mt-3 text-muted">Loading task output...</p>
-                                        </div>
+                        <div id="formatted" class="tab-pane active">
+                            <div class="terminal">
+                                <div class="terminal-actions">
+                                    <button id="copyBtn" title="Copy to clipboard" class="button button-secondary btn-icon">
+                                        <!-- Clipboard SVG -->
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="7" y="3" width="10" height="4" rx="2" stroke="#343a40" stroke-width="2" fill="none"/><rect x="5" y="7" width="14" height="14" rx="2" stroke="#343a40" stroke-width="2" fill="none"/></svg>
+                                        Copy
+                                    </button>
+                                    <button id="downloadBtn" title="Download output" class="button button-secondary btn-icon">
+                                        <!-- Download SVG -->
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3v12m0 0l-4-4m4 4l4-4" stroke="#343a40" stroke-width="2" fill="none"/><rect x="4" y="17" width="16" height="4" rx="2" stroke="#343a40" stroke-width="2" fill="none"/></svg>
+                                        Download
+                                    </button>
+                                    <button id="clearBtn" title="Clear terminal" class="button button-danger btn-icon">
+                                        <!-- Trash SVG -->
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="6" width="18" height="15" rx="2" stroke="#dc3545" stroke-width="2" fill="none"/><path d="M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2" stroke="#dc3545" stroke-width="2" fill="none"/><line x1="10" y1="11" x2="10" y2="17" stroke="#dc3545" stroke-width="2"/><line x1="14" y1="11" x2="14" y2="17" stroke="#dc3545" stroke-width="2"/></svg>
+                                        Clear
+                                    </button>
+                                </div>
+                                <div class="terminal-output" id="terminalOutput">
+                                    <div style="text-align:center; padding:3rem 0;" id="loadingOutput">
+                                        <span class="loader" aria-label="Loading..."></span>
+                                        <p class="task-meta">Loading task output...</p>
                                     </div>
                                 </div>
                             </div>
-                            <div class="tab-pane fade" id="raw">
-                                <div class="terminal">
-                                    <div class="terminal-actions">
-                                        <button id="rawCopyBtn" title="Copy raw output">
-                                            <i class="bi bi-clipboard"></i> Copy
-                                        </button>
-                                        <button id="rawDownloadBtn" title="Download raw output">
-                                            <i class="bi bi-download"></i> Download
-                                        </button>
-                                    </div>
-                                    <pre id="rawOutput" class="mb-0">Loading raw output...</pre>
+                        </div>
+                        <div id="raw" class="tab-pane" style="display:none;">
+                            <div class="terminal">
+                                <div class="terminal-actions">
+                                    <button id="rawCopyBtn" title="Copy raw output" class="button button-secondary btn-icon">
+                                        <!-- Clipboard SVG -->
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="7" y="3" width="10" height="4" rx="2" stroke="#343a40" stroke-width="2" fill="none"/><rect x="5" y="7" width="14" height="14" rx="2" stroke="#343a40" stroke-width="2" fill="none"/></svg>
+                                        Copy
+                                    </button>
+                                    <button id="rawDownloadBtn" title="Download raw output" class="button button-secondary btn-icon">
+                                        <!-- Download SVG -->
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3v12m0 0l-4-4m4 4l4-4" stroke="#343a40" stroke-width="2" fill="none"/><rect x="4" y="17" width="16" height="4" rx="2" stroke="#343a40" stroke-width="2" fill="none"/></svg>
+                                        Download
+                                    </button>
                                 </div>
+                                <pre id="rawOutput" class="mb-0">Loading raw output...</pre>
                             </div>
                         </div>
                     </div>
@@ -6190,8 +5391,7 @@ cat > "$WORKDIR/ui/templates/task.html" <<'HTML'
         </div>
     </div>
 
-    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-    <script src="/static/js/bootstrap.bundle.min.js"></script>
+    <script src="/static/app.js"></script>
     <script>
         $(document).ready(function() {
             // Elements
@@ -6880,6 +6080,47 @@ echo "
 💡 Options:
   bash prime.sh --clean  # Clean existing installation before setup
 "
+
+
+#!/usr/bin/env bash
+
+# update.sh - Script to update the Infinite AI Agent
+# This script removes the current installation and installs the latest version
+
+# Exit on any error
+set -e
+
+# Display banner
+echo "╔═════════════════════════════════════════════════════════════╗"
+echo "║ 🔄 INFINITE AI UPDATER                                      ║"
+echo "╚═════════════════════════════════════════════════════════════╝"
+
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Go to parent directory (should be the infinite_agent directory)
+cd "$SCRIPT_DIR/.."
+PARENT_DIR="$(pwd)"
+
+echo "📋 Current directory: $PARENT_DIR"
+echo "🗑️ Removing current installation..."
+
+# Go up one more level
+cd ..
+
+# Remove the infinite_agent directory
+rm -rf "$PARENT_DIR"
+echo "✅ Removed old installation"
+
+# Download and run the latest prime.sh
+echo "🔄 Downloading and running latest version..."
+curl -s https://raw.githubusercontent.com/incredimo/prime/refs/heads/main/prime.sh | bash
+
+echo "✅ Update completed successfully!"
+echo ""
+echo "📋 Next steps:"
+echo "  cd ~/infinite_ai"
+echo "  ./start_agent.sh    # Runs the agent with Web UI and auto-restart"
 
 
 # ------------------------------------------------------------
