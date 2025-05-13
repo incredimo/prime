@@ -4,19 +4,19 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Infinite AI - Task Details</title>
-    <link rel="stylesheet" href="/static/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             background-color: #f8f9fa;
         }
-        
+
         .navbar {
             background-color: #343a40 !important;
             box-shadow: 0 2px 4px rgba(0,0,0,.1);
         }
-        
+
         .terminal {
             background-color: #212529;
             color: #cccccc;
@@ -30,7 +30,7 @@
             height: calc(100vh - 250px);
             position: relative;
         }
-        
+
         .terminal-toolbar {
             position: sticky;
             top: 0;
@@ -43,18 +43,18 @@
             justify-content: space-between;
             align-items: center;
         }
-        
+
         .status-badge {
             font-size: 0.85em;
             padding: 0.4em 0.7em;
             border-radius: 50rem;
         }
-        
+
         .status-running { background-color: #007bff; color: white; }
         .status-completed { background-color: #28a745; color: white; }
         .status-failed { background-color: #dc3545; color: white; }
         .status-waiting { background-color: #ffc107; color: black; }
-        
+
         .info-panel {
             background-color: white;
             border-radius: 0.5rem;
@@ -62,7 +62,7 @@
             margin-bottom: 1.25rem;
             box-shadow: 0 0.125rem 0.25rem rgba(0,0,0,.075);
         }
-        
+
         .info-heading {
             font-size: 1.1rem;
             font-weight: 600;
@@ -70,71 +70,71 @@
             padding-bottom: 0.5rem;
             border-bottom: 1px solid #e9ecef;
         }
-        
+
         .info-list {
             list-style-type: none;
             padding-left: 0;
             margin-bottom: 0;
         }
-        
+
         .info-list li {
             display: flex;
             justify-content: space-between;
             padding: 0.5rem 0;
             border-bottom: 1px solid #f8f9fa;
         }
-        
+
         .info-list li:last-child {
             border-bottom: none;
         }
-        
+
         .info-label {
             font-weight: 500;
             color: #495057;
         }
-        
+
         .info-value {
             color: #212529;
             text-align: right;
             word-break: break-word;
         }
-        
+
         .step-indicator {
             font-size: 0.85rem;
             margin-top: 0.25rem;
             color: #6c757d;
         }
-        
+
         .env-list {
             max-height: 300px;
             overflow-y: auto;
         }
-        
+
         .task-logs-btn {
             text-decoration: none !important;
         }
-        
+
         .task-logs-btn i {
             margin-right: 0.5rem;
         }
-        
+
         .terminal-output {
             line-height: 1.5;
         }
-        
+
         .command-line {
             color: #50fa7b;
             font-weight: bold;
         }
-        
+
         .error-output {
             color: #ff5555;
         }
-        
+
         .success-output {
             color: #50fa7b;
         }
-        
+
         .step-header {
             color: #bd93f9;
             font-weight: bold;
@@ -143,14 +143,14 @@
             border-bottom: 1px solid #44475a;
             padding-bottom: 0.25rem;
         }
-        
+
         .output-header {
             color: #8be9fd;
             font-weight: bold;
             margin-top: 0.5rem;
             margin-bottom: 0.5rem;
         }
-        
+
         .terminal-actions {
             position: absolute;
             top: 1rem;
@@ -159,7 +159,7 @@
             gap: 0.5rem;
             z-index: 10;
         }
-        
+
         .terminal-actions button {
             background-color: rgba(255, 255, 255, 0.1);
             border: none;
@@ -170,47 +170,47 @@
             cursor: pointer;
             transition: all 0.2s;
         }
-        
+
         .terminal-actions button:hover {
             background-color: rgba(255, 255, 255, 0.2);
         }
-        
+
         .spinner-container {
             display: inline-block;
             margin-left: 0.5rem;
         }
-        
+
         #environmentDetails .command-available {
             color: #50fa7b;
         }
-        
+
         #environmentDetails .command-unavailable {
             color: #ff5555;
         }
-        
+
         .task-controls-row {
             margin-bottom: 1rem;
         }
-        
+
         .terminal-mode-tabs {
             margin-bottom: 1rem;
         }
-        
+
         .terminal-mode-tabs .nav-link {
             padding: 0.25rem 0.75rem;
             font-size: 0.85rem;
         }
-        
+
         .terminal-mode-tabs .nav-link.active {
             font-weight: 600;
         }
-        
+
         .blinking-cursor::after {
             content: '▋';
             color: #ccc;
             animation: blink 1s step-end infinite;
         }
-        
+
         @keyframes blink {
             0%, 100% { opacity: 1; }
             50% { opacity: 0; }
@@ -249,7 +249,7 @@
                 <div class="d-flex justify-content-between align-items-center mb-3">
                     <h2 class="mb-0">Task Details</h2>
                 </div>
-                
+
                 <div class="task-controls-row">
                     <a href="/" class="btn btn-outline-secondary">
                         <i class="bi bi-arrow-left"></i> Back to Dashboard
@@ -258,7 +258,7 @@
                         <i class="bi bi-file-text"></i> View Detailed Logs
                     </a>
                 </div>
-                
+
                 <div class="info-panel">
                     <div class="info-heading d-flex justify-content-between align-items-center">
                         <span><i class="bi bi-info-circle"></i> Task Information</span>
@@ -294,7 +294,7 @@
                         </li>
                     </ul>
                 </div>
-                
+
                 <div class="info-panel">
                     <div class="info-heading">
                         <i class="bi bi-hdd-rack"></i> Environment
@@ -308,7 +308,7 @@
                         </div>
                     </div>
                 </div>
-                
+
                 <div class="info-panel">
                     <div class="info-heading">
                         <i class="bi bi-tools"></i> Task Controls
@@ -323,7 +323,7 @@
                     </div>
                 </div>
             </div>
-            
+
             <!-- Right Column - Terminal Output -->
             <div class="col-lg-9">
                 <div class="card border-0 shadow-sm">
@@ -342,7 +342,7 @@
                             </button>
                         </div>
                     </div>
-                    
+
                     <div class="card-body p-0">
                         <ul class="nav nav-tabs terminal-mode-tabs" id="outputModeTabs">
                             <li class="nav-item">
@@ -352,7 +352,7 @@
                                 <a class="nav-link" id="raw-tab" data-bs-toggle="tab" href="#raw">Raw Output</a>
                             </li>
                         </ul>
-                        
+
                         <div class="tab-content">
                             <div class="tab-pane fade show active" id="formatted">
                                 <div class="terminal">
@@ -398,7 +398,7 @@
     </div>
 
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-    <script src="/static/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         $(document).ready(function() {
             // Elements
@@ -418,32 +418,32 @@
             const autoScrollToggle = $('#autoScrollToggle');
             const scrollToBottomBtn = $('#scrollToBottomBtn');
             const stepSpinner = $('#stepSpinner');
-            
+
             // Variables
             let autoScroll = true;
             let ws = null;
             let rawOutputText = '';
             let taskCompleted = false;
-            
+
             // Format functions
             function formatDuration(seconds) {
                 if (!seconds) return 'N/A';
-                
+
                 const minutes = Math.floor(seconds / 60);
                 const remainingSeconds = seconds % 60;
-                
+
                 if (minutes === 0) {
                     return `${remainingSeconds}s`;
                 } else {
                     return `${minutes}m ${remainingSeconds}s`;
                 }
             }
-            
+
             function formatDate(dateString) {
                 if (!dateString) return 'N/A';
                 return new Date(dateString).toLocaleString();
             }
-            
+
             function getStatusBadgeClass(status) {
                 if (status.includes('running') || status.includes('starting')) {
                     return 'status-running';
@@ -457,41 +457,41 @@
                     return 'bg-secondary';
                 }
             }
-            
+
             // Function to highlight terminal output
             function highlightOutput(text) {
                 // Split the output by step headers
                 const parts = text.split(/^---\s+Step\s+\d+\s+\([A-Z]+\)\s+---$/gm);
                 const stepHeaders = text.match(/^---\s+Step\s+\d+\s+\([A-Z]+\)\s+---$/gm) || [];
-                
+
                 let formattedOutput = '';
-                
+
                 if (parts.length <= 1) {
                     // No step headers found, just return the text with error/success highlighting
                     return highlightErrorsAndSuccess(text);
                 }
-                
+
                 // Process each step
                 for (let i = 0; i < stepHeaders.length; i++) {
                     const header = stepHeaders[i];
                     const content = parts[i + 1] || '';
-                    
+
                     // Add the step header
                     formattedOutput += `<div class="step-header">${header}</div>`;
-                    
+
                     // Split the step content into code and output
                     const outputIndex = content.indexOf('--- Output ---');
-                    
+
                     if (outputIndex !== -1) {
                         const code = content.substring(0, outputIndex).trim();
                         const output = content.substring(outputIndex + 14).trim();
-                        
+
                         // Add the code section
                         formattedOutput += `<div class="command-line">${escapeHtml(code)}</div>`;
-                        
+
                         // Add the output header
                         formattedOutput += `<div class="output-header">--- Output ---</div>`;
-                        
+
                         // Add the highlighted output
                         formattedOutput += highlightErrorsAndSuccess(output);
                     } else {
@@ -499,29 +499,29 @@
                         formattedOutput += highlightErrorsAndSuccess(content);
                     }
                 }
-                
+
                 return formattedOutput;
             }
-            
+
             // Function to highlight errors and success messages
             function highlightErrorsAndSuccess(text) {
                 let html = escapeHtml(text);
-                
+
                 // Highlight error messages
-                html = html.replace(/(?:^|\n)(error|exception|traceback|fail|\[erro?r?\]|❌)/gi, 
+                html = html.replace(/(?:^|\n)(error|exception|traceback|fail|\[erro?r?\]|❌)/gi,
                                    (match) => `<span class="error-output">${match}</span>`);
-                
+
                 // Highlight success messages
-                html = html.replace(/(?:^|\n)(success|completed|done|✅)/gi, 
+                html = html.replace(/(?:^|\n)(success|completed|done|✅)/gi,
                                    (match) => `<span class="success-output">${match}</span>`);
-                
+
                 // Highlight commands with $
-                html = html.replace(/(?:^|\n)\$\s+(.*?)(?=\n|$)/g, 
+                html = html.replace(/(?:^|\n)\$\s+(.*?)(?=\n|$)/g,
                                    (match, cmd) => `<span class="command-line">$ ${cmd}</span>`);
-                
+
                 return html;
             }
-            
+
             // Helper function to escape HTML
             function escapeHtml(text) {
                 return text
@@ -531,18 +531,18 @@
                     .replace(/"/g, '&quot;')
                     .replace(/'/g, '&#039;');
             }
-            
+
             // Function to add blinking cursor if task is still running
             function addBlinkingCursor(element, isRunning) {
                 // Remove existing cursor
                 element.find('.blinking-cursor').remove();
-                
+
                 // Add new cursor if task is running
                 if (isRunning) {
                     element.append('<span class="blinking-cursor"></span>');
                 }
             }
-            
+
             // Function to load task details
             function loadTaskDetails() {
                 $.ajax({
@@ -555,28 +555,28 @@
                             loadingOutput.hide();
                             return;
                         }
-                        
+
                         // Update task info
                         $('#taskGoal').text(data.goal || 'N/A');
                         $('#taskStep').text(data.step || '0');
                         $('#currentStep').text(data.step || '0');
-                        
+
                         // Update task status badge
                         const status = data.status || 'unknown';
                         taskStatusBadge.text(status);
                         taskStatusBadge.removeClass().addClass(`badge status-badge ${getStatusBadgeClass(status)}`);
-                        
+
                         // Check if task is completed
                         taskCompleted = status.includes('completed') || status.includes('failed');
-                        
+
                         // Update cancel button
                         cancelBtn.prop('disabled', taskCompleted);
-                        
+
                         // Update created time
                         if (data.created) {
                             $('#taskCreated').text(formatDate(data.created));
                         }
-                        
+
                         // Update duration
                         if (data.duration) {
                             $('#taskDuration').text(formatDuration(data.duration));
@@ -584,20 +584,20 @@
                             const duration = Math.floor(Date.now() / 1000 - data.start_time);
                             $('#taskDuration').text(formatDuration(duration) + ' (running)');
                         }
-                        
+
                         // Show step spinner if task is running
                         if (!taskCompleted && status.includes('running')) {
                             stepSpinner.show();
                         } else {
                             stepSpinner.hide();
                         }
-                        
+
                         // Update terminal output
                         updateTerminalOutput(data.output || '');
-                        
+
                         // Add blinking cursor if task is still running
                         addBlinkingCursor(terminalOutput, !taskCompleted);
-                        
+
                         // Update environment details
                         updateEnvironmentDetails(data.environment);
                     },
@@ -608,44 +608,44 @@
                     }
                 });
             }
-            
+
             // Function to update terminal output
             function updateTerminalOutput(output) {
                 if (!output) {
                     return;
                 }
-                
+
                 // Store raw output
                 rawOutputText = output;
                 rawOutput.text(output);
-                
+
                 // Format and display terminal output
                 const highlightedOutput = highlightOutput(output);
                 terminalOutput.html(highlightedOutput);
                 loadingOutput.hide();
-                
+
                 // Scroll to bottom if auto-scroll is enabled
                 if (autoScroll) {
                     const terminal = $('.terminal');
                     terminal.scrollTop(terminal[0].scrollHeight);
                 }
             }
-            
+
             // Function to update environment details
             function updateEnvironmentDetails(env) {
                 if (!env) {
                     environmentDetails.html('<div class="text-muted">No environment information available</div>');
                     return;
                 }
-                
+
                 let html = '<ul class="list-group list-group-flush">';
-                
+
                 // Process user and root status
                 html += `<li class="list-group-item d-flex justify-content-between align-items-center">
                     <span>User</span>
                     <span>${env.user || 'unknown'} ${env.is_root ? '(root)' : ''}</span>
                 </li>`;
-                
+
                 // OS info
                 if (env.os_info) {
                     html += `<li class="list-group-item d-flex justify-content-between align-items-center">
@@ -653,7 +653,7 @@
                         <span>${env.os_info}</span>
                     </li>`;
                 }
-                
+
                 // Kernel
                 if (env.kernel) {
                     html += `<li class="list-group-item d-flex justify-content-between align-items-center">
@@ -661,7 +661,7 @@
                         <span>${env.kernel}</span>
                     </li>`;
                 }
-                
+
                 // Working directory
                 if (env.working_dir) {
                     html += `<li class="list-group-item d-flex justify-content-between align-items-center">
@@ -669,7 +669,7 @@
                         <span>${env.working_dir}</span>
                     </li>`;
                 }
-                
+
                 // Docker status
                 if (env.docker_status) {
                     html += `<li class="list-group-item d-flex justify-content-between align-items-center">
@@ -677,13 +677,13 @@
                         <span>${env.docker_status}${env.docker_running ? ` (${env.docker_running})` : ''}</span>
                     </li>`;
                 }
-                
+
                 // Available commands
                 if (env.available_commands) {
                     html += `<li class="list-group-item">
                         <div>Available Commands</div>
                         <div class="mt-1">`;
-                    
+
                     if (typeof env.available_commands === 'string') {
                         // Handle string format
                         const commands = env.available_commands.split(/\s+/).filter(Boolean);
@@ -697,11 +697,11 @@
                             html += `<span class="badge ${isAvailable ? 'bg-success' : 'bg-danger'} me-1">${cmd}</span>`;
                         }
                     }
-                    
+
                     html += `</div>
                     </li>`;
                 }
-                
+
                 // Memory info
                 if (env.memory) {
                     html += `<li class="list-group-item d-flex justify-content-between align-items-center">
@@ -709,7 +709,7 @@
                         <span>${env.memory}</span>
                     </li>`;
                 }
-                
+
                 // Free disk space
                 if (env.free_disk_space) {
                     html += `<li class="list-group-item d-flex justify-content-between align-items-center">
@@ -717,30 +717,30 @@
                         <span>${env.free_disk_space}</span>
                     </li>`;
                 }
-                
+
                 html += '</ul>';
                 environmentDetails.html(html);
             }
-            
+
             // Initialize WebSocket connection
             function initWebSocket() {
                 ws = new WebSocket(`ws://${window.location.host}/ws`);
-                
+
                 ws.onopen = function() {
                     console.log('WebSocket connected');
                 };
-                
+
                 ws.onmessage = function(event) {
                     const data = JSON.parse(event.data);
-                    
+
                     if (data.type === 'task_update' && data.id === taskId) {
                         // Update terminal output
                         updateTerminalOutput(data.output);
-                        
+
                         // Update task status and step
                         taskStatusBadge.text(data.status);
                         taskStatusBadge.removeClass().addClass(`badge status-badge ${getStatusBadgeClass(data.status)}`);
-                        
+
                         if (data.step) {
                             $('#taskStep').text(data.step);
                             $('#currentStep').text(data.step);
@@ -749,24 +749,24 @@
                     } else if (data.type === 'task_complete' && data.id === taskId) {
                         // Update terminal output
                         updateTerminalOutput(data.output);
-                        
+
                         // Update task status
                         taskStatusBadge.text(data.status);
                         taskStatusBadge.removeClass().addClass(`badge status-badge ${getStatusBadgeClass(data.status)}`);
-                        
+
                         // Update task completion
                         taskCompleted = true;
                         cancelBtn.prop('disabled', true);
                         stepSpinner.hide();
-                        
+
                         // Remove blinking cursor
                         addBlinkingCursor(terminalOutput, false);
-                        
+
                         // Reload task details to get final information
                         loadTaskDetails();
                     }
                 };
-                
+
                 ws.onclose = function() {
                     console.log('WebSocket disconnected');
                     // Try to reconnect after a delay if the task is not completed
@@ -774,12 +774,12 @@
                         setTimeout(initWebSocket, 5000);
                     }
                 };
-                
+
                 ws.onerror = function(error) {
                     console.error('WebSocket error:', error);
                 };
             }
-            
+
             // Copy terminal output
             copyBtn.on('click', function() {
                 const text = terminalOutput.text();
@@ -795,7 +795,7 @@
                         alert('Failed to copy: ' + err);
                     });
             });
-            
+
             // Copy raw output
             rawCopyBtn.on('click', function() {
                 navigator.clipboard.writeText(rawOutputText)
@@ -810,7 +810,7 @@
                         alert('Failed to copy: ' + err);
                     });
             });
-            
+
             // Download terminal output
             downloadBtn.on('click', function() {
                 const text = terminalOutput.text();
@@ -824,7 +824,7 @@
                 document.body.removeChild(a);
                 URL.revokeObjectURL(url);
             });
-            
+
             // Download raw output
             rawDownloadBtn.on('click', function() {
                 const blob = new Blob([rawOutputText], { type: 'text/plain' });
@@ -837,14 +837,14 @@
                 document.body.removeChild(a);
                 URL.revokeObjectURL(url);
             });
-            
+
             // Clear terminal
             clearBtn.on('click', function() {
                 if (confirm('Are you sure you want to clear the terminal? This will only clear the view, not the actual task output.')) {
                     terminalOutput.empty();
                 }
             });
-            
+
             // Cancel task
             cancelBtn.on('click', function() {
                 if (confirm('Are you sure you want to cancel this task?')) {
@@ -865,32 +865,32 @@
                     });
                 }
             });
-            
+
             // Refresh button
             refreshBtn.on('click', function() {
                 loadTaskDetails();
             });
-            
+
             // Auto-scroll toggle
             autoScrollToggle.on('change', function() {
                 autoScroll = $(this).is(':checked');
-                
+
                 if (autoScroll) {
                     const terminal = $('.terminal');
                     terminal.scrollTop(terminal[0].scrollHeight);
                 }
             });
-            
+
             // Scroll to bottom button
             scrollToBottomBtn.on('click', function() {
                 const terminal = $('.terminal');
                 terminal.scrollTop(terminal[0].scrollHeight);
             });
-            
+
             // Initialize
             loadTaskDetails();
             initWebSocket();
-            
+
             // Set up auto-refresh
             const refreshInterval = setInterval(function() {
                 if (!taskCompleted) {
