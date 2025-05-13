@@ -21,9 +21,10 @@ run_elevated() {
   fi
 }
 
+# Function to log messages
+log(){ printf "[%(%F %T)T] %s\n" -1 "$*" | tee -a "$LOG" ; }
+
 # Create directories and set proper permissions
 mkdir -p "$WORKDIR" "$WORKDIR/bin" "$WORKDIR/logs" "$WORKDIR/ui" "$WORKDIR/tmp"
 chmod 755 "$WORKDIR"
 chmod 755 "$WORKDIR/bin"
-
-log(){ printf "[%(%F %T)T] %s\n" -1 "$*" | tee -a "$LOG" ; }

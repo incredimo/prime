@@ -32,12 +32,15 @@ run_elevated() {
   fi
 }
 
+# Function to log messages
+log(){ printf "[%(%F %T)T] %s\n" -1 "$*" | tee -a "$LOG" ; }
+
 # Create directories and set proper permissions
 mkdir -p "$WORKDIR" "$WORKDIR/bin" "$WORKDIR/logs" "$WORKDIR/ui" "$WORKDIR/tmp"
 chmod 755 "$WORKDIR"
 chmod 755 "$WORKDIR/bin"
 
-log(){ printf "[%(%F %T)T] %s\n" -1 "$*" | tee -a "$LOG" ; }
+
 # Clean old setup if requested
 if [[ "$*" == *"--clean"* ]] || [[ "$*" == *"-c"* ]]; then
   echo "🧹 Cleaning old installation..."
@@ -47,6 +50,8 @@ if [[ "$*" == *"--clean"* ]] || [[ "$*" == *"-c"* ]]; then
   run_elevated rm -f /etc/sudoers.d/90-$ME-ai 2>/dev/null || true
   echo "✅ Cleanup complete. Starting fresh installation."
 fi
+
+
 install_packages() {
   log "Installing system prerequisites..."
   run_elevated apt-get update -y
