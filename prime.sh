@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# bootstrap_infinite_ai.sh   —  WSL-aware, Ollama-powered, Qwen3 agent with UI
+# bootstrap_infinite_ai.sh   —  WSL-aware, Ollama-powered, gemma3 agent with UI
 # --------------------------------------------------------------------
 set -euo pipefail
 IFS=$'\n\t'
@@ -256,27 +256,27 @@ else
 fi
 
 # ------------------------------------------------------------
-# 5.  Pull qwen3 model if Ollama is running
+# 5.  Pull gemma3 model if Ollama is running
 # ------------------------------------------------------------
 if [[ "${OLLAMA_RUNNING:-false}" == "true" ]]; then
-  log "Checking for qwen3 model..."
-  if ! curl -s "$OLLAMA_ENDPOINT/api/tags" | grep -q '"name":"qwen3"'; then
-    log "Pulling qwen3 model… (this may take a while)"
+  log "Checking for gemma3 model..."
+  if ! curl -s "$OLLAMA_ENDPOINT/api/tags" | grep -q '"name":"gemma3"'; then
+    log "Pulling gemma3 model… (this may take a while)"
     if [[ -x "$OLLAMA_BIN" ]]; then
-      "$OLLAMA_BIN" pull qwen3 || {
-        log "Failed pulling qwen3. Will try later."
+      "$OLLAMA_BIN" pull gemma3 || {
+        log "Failed pulling gemma3. Will try later."
       }
     else
-      ollama pull qwen3 || {
-        log "Failed pulling qwen3. Will try later."
+      ollama pull gemma3 || {
+        log "Failed pulling gemma3. Will try later."
       }
     fi
   else
-    log "qwen3 model already present. ✓"
+    log "gemma3 model already present. ✓"
   fi
 else
   log "Skipping model pull since Ollama is not running."
-  log "Once Ollama is running, pull the model with: ollama pull qwen3"
+  log "Once Ollama is running, pull the model with: ollama pull gemma3"
 fi
 
 # ------------------------------------------------------------
@@ -351,24 +351,24 @@ if (-not $ollamaRunning) {
     }
 }
 
-# Check for qwen3 model
+# Check for gemma3 model
 try {
     $response = Invoke-WebRequest -Uri "http://localhost:11434/api/tags" -ErrorAction SilentlyContinue
     $models = ConvertFrom-Json $response.Content
     
-    $hasQwen3 = $false
+    $hasgemma3 = $false
     foreach ($model in $models.models) {
-        if ($model.name -eq "qwen3") {
-            $hasQwen3 = $true
+        if ($model.name -eq "gemma3") {
+            $hasgemma3 = $true
             break
         }
     }
     
-    if ($hasQwen3) {
-        Write-Host "qwen3 model is already installed."
+    if ($hasgemma3) {
+        Write-Host "gemma3 model is already installed."
     } else {
-        Write-Host "qwen3 model is not installed. Installing now..."
-        Start-Process -FilePath "$env:LOCALAPPDATA\Ollama\ollama.exe" -ArgumentList "pull qwen3" -Wait
+        Write-Host "gemma3 model is not installed. Installing now..."
+        Start-Process -FilePath "$env:LOCALAPPDATA\Ollama\ollama.exe" -ArgumentList "pull gemma3" -Wait
     }
 } catch {
     Write-Host "Could not check for installed models."
@@ -496,7 +496,7 @@ WORKDIR    = pathlib.Path(__file__).resolve().parent
 SKILL_DIR  = WORKDIR / "skills"
 DB_PATH    = WORKDIR / "skills.db"
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
-MODEL      = os.getenv("OLLAMA_MODEL", "qwen3") 
+MODEL      = os.getenv("OLLAMA_MODEL", "gemma3") 
 API_PORT   = int(os.getenv("INFINITE_AI_PORT", 8000))
 UI_PORT    = int(os.getenv("INFINITE_AI_UI_PORT", 8080))
 # --------------------------------------------------------------
