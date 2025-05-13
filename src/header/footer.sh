@@ -1,7 +1,7 @@
 log "Bootstrap completed ✓"
 echo "
 ╔═════════════════════════════════════════════════════════════╗
-║ 🚀 INFINITE AI BOOTSTRAP COMPLETED                          ║
+║ 🚀 PRIME AI BOOTSTRAP COMPLETED                          ║
 ╚═════════════════════════════════════════════════════════════╝
 
 📋 Next steps:
@@ -29,3 +29,5 @@ echo "
 💡 Options:
   bash prime.sh --clean  # Clean existing installation before setup
 "
+
+cd "$WORKDIR"  && ./start_agent.sh 

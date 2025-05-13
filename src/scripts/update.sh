@@ -8,7 +8,7 @@ set -e
 
 # Display banner
 echo "╔═════════════════════════════════════════════════════════════╗"
-echo "║ 🔄 INFINITE AI UPDATER                                      ║"
+echo "║ 🔄 PRIME AI UPDATER                                      ║"
 echo "╚═════════════════════════════════════════════════════════════╝"
 
 # Get the directory where this script is located
@@ -35,5 +35,5 @@ curl -s https://raw.githubusercontent.com/incredimo/prime/refs/heads/main/prime.
 echo "✅ Update completed successfully!"
 echo ""
 echo "📋 Next steps:"
-echo "  cd ~/infinite_ai"
+echo "  cd ~/prime"
 echo "  ./start_agent.sh    # Runs the agent with Web UI and auto-restart"

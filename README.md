@@ -49,7 +49,7 @@ curl https://raw.githubusercontent.com/incredimo/prime/main/prime.sh | bash
 After installation, you can start the agent with:
 
 ```bash
-cd ~/infinite_ai
+cd ~/prime
 ./start_agent.sh
 ```
 

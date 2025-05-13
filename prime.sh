@@ -7,7 +7,7 @@ IFS=$'\n\t'
 export DEBIAN_FRONTEND=noninteractive
 
 ME="$(whoami)"
-WORKDIR="$HOME/infinite_ai"
+WORKDIR="$HOME/prime"
 LOG="$WORKDIR/install.log"
 # Determine if we need sudo
 need_sudo() {
@@ -410,7 +410,7 @@ try {
 
 Write-Host ""
 Write-Host "Ollama should now be accessible from WSL at http://localhost:11434"
-Write-Host "You can run your infinite_ai agent in WSL now."
+Write-Host "You can run your prime agent in WSL now."
 PS1
 
 # Copy to Windows accessible location
@@ -557,8 +557,8 @@ LOGS_DIR = WORKDIR / "logs"
 TASK_LOGS_DIR = LOGS_DIR / "tasks"
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
 MODEL = os.getenv("OLLAMA_MODEL", "gemma3")
-API_PORT = int(os.getenv("INFINITE_AI_PORT", 8000))
-UI_PORT = int(os.getenv("INFINITE_AI_UI_PORT", 8080))
+API_PORT = int(os.getenv("prime_PORT", 8000))
+UI_PORT = int(os.getenv("prime_UI_PORT", 8080))
 MAX_CONTEXT = 4000  # approximate token limit for truncation
 MAX_LOG_SIZE = 100000  # maximum number of characters to keep in a log file
 LOG_TIMESTAMP_FORMAT = "%Y%m%d%H%M%S"  # Format for log filenames
@@ -6052,7 +6052,7 @@ chmod +x start_ollama.sh
 log "Bootstrap completed ✓"
 echo "
 ╔═════════════════════════════════════════════════════════════╗
-║ 🚀 INFINITE AI BOOTSTRAP COMPLETED                          ║
+║ 🚀 PRIME AI BOOTSTRAP COMPLETED                          ║
 ╚═════════════════════════════════════════════════════════════╝
 
 📋 Next steps:
@@ -6092,7 +6092,7 @@ set -e
 
 # Display banner
 echo "╔═════════════════════════════════════════════════════════════╗"
-echo "║ 🔄 INFINITE AI UPDATER                                      ║"
+echo "║ 🔄 PRIME AI UPDATER                                      ║"
 echo "╚═════════════════════════════════════════════════════════════╝"
 
 # Get the directory where this script is located
@@ -6119,7 +6119,7 @@ curl -s https://raw.githubusercontent.com/incredimo/prime/refs/heads/main/prime.
 echo "✅ Update completed successfully!"
 echo ""
 echo "📋 Next steps:"
-echo "  cd ~/infinite_ai"
+echo "  cd ~/prime"
 echo "  ./start_agent.sh    # Runs the agent with Web UI and auto-restart"
 
 
@@ -6129,7 +6129,7 @@ echo "  ./start_agent.sh    # Runs the agent with Web UI and auto-restart"
 log "Bootstrap completed ✓"
 echo "
 ╔═════════════════════════════════════════════════════════════╗
-║ 🚀 INFINITE AI BOOTSTRAP COMPLETED                          ║
+║ 🚀 PRIME AI BOOTSTRAP COMPLETED                          ║
 ╚═════════════════════════════════════════════════════════════╝
 
 📋 Next steps:
@@ -6157,3 +6157,5 @@ echo "
 💡 Options:
   bash prime.sh --clean  # Clean existing installation before setup
 "
+
+cd "$WORKDIR"  && ./start_agent.sh 

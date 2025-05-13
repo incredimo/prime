@@ -201,7 +201,7 @@ try {
 
 Write-Host ""
 Write-Host "Ollama should now be accessible from WSL at http://localhost:11434"
-Write-Host "You can run your infinite_ai agent in WSL now."
+Write-Host "You can run your prime agent in WSL now."
 PS1
 
 # Copy to Windows accessible location

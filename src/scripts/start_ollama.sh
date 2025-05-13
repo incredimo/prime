@@ -29,7 +29,7 @@ chmod +x start_ollama.sh
 log "Bootstrap completed ✓"
 echo "
 ╔═════════════════════════════════════════════════════════════╗
-║ 🚀 INFINITE AI BOOTSTRAP COMPLETED                          ║
+║ 🚀 PRIME AI BOOTSTRAP COMPLETED                          ║
 ╚═════════════════════════════════════════════════════════════╝
 
 📋 Next steps:

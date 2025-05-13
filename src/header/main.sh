@@ -6,5 +6,5 @@ IFS=$'\n\t'
 export DEBIAN_FRONTEND=noninteractive
 
 ME="$(whoami)"
-WORKDIR="$HOME/infinite_ai"
+WORKDIR="$HOME/prime"
 LOG="$WORKDIR/install.log"
