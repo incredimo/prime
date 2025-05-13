@@ -10,7 +10,7 @@ function Append-Content {
         [string]$FilePath,
         [string]$OutputFile
     )
-    
+
     if (Test-Path $FilePath) {
         Get-Content $FilePath | Out-File -Append -FilePath $OutputFile -Encoding utf8
     } else {
@@ -26,7 +26,7 @@ function Append-Directory {
         [string]$OutputFile,
         [string]$FilePattern = "*.*"
     )
-    
+
     if (Test-Path $DirectoryPath) {
         $files = Get-ChildItem -Path $DirectoryPath -Filter $FilePattern | Sort-Object Name
         foreach ($file in $files) {
@@ -50,7 +50,7 @@ Write-Host "Building prime.sh from source files..."
 
 # 1. Header
 Write-Host "Adding header..."
-Append-Directory -DirectoryPath "src/header" -OutputFile $outputFile -FilePattern "*.sh"
+Append-Content -FilePath "src/header/main.sh" -OutputFile $outputFile
 
 # 2. Utility functions
 Write-Host "Adding utility functions..."
@@ -113,7 +113,7 @@ $templates = Get-ChildItem -Path "src/ui/templates" -Filter "*.html" | Sort-Obje
 foreach ($template in $templates) {
     $templateName = $template.Name
     $templateTitle = $templateName -replace "\.html$", ""
-    
+
     "# $templateTitle.html template" | Out-File -Append -FilePath $outputFile -Encoding utf8
     "cat > `"`$WORKDIR/ui/templates/$templateName`" <<'HTML'" | Out-File -Append -FilePath $outputFile -Encoding utf8
     Append-Content -FilePath $template.FullName -OutputFile $outputFile
@@ -127,6 +127,9 @@ Append-Directory -DirectoryPath "src/scripts" -OutputFile $outputFile -FilePatte
 
 # 9. Final message
 Write-Host "Adding final message..."
+"# ------------------------------------------------------------" | Out-File -Append -FilePath $outputFile -Encoding utf8
+"# 12.  Start the agent" | Out-File -Append -FilePath $outputFile -Encoding utf8
+"# ------------------------------------------------------------" | Out-File -Append -FilePath $outputFile -Encoding utf8
 Append-Content -FilePath "src/header/footer.sh" -OutputFile $outputFile
 
 # Make the output file executable
