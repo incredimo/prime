@@ -10,15 +10,28 @@ ME="$(whoami)"
 WORKDIR="$HOME/infinite_ai"
 LOG="$WORKDIR/install.log"
 
-# Clean old setup if requested
-if [[ "$*" == *"--clean"* ]] || [[ "$*" == *"-c"* ]]; then
-  echo "🧹 Cleaning old installation..."
-  sudo pkill -f ollama 2>/dev/null || true
-  pkill -f "python.*agent.py" 2>/dev/null || true
-  sudo rm -rf "$WORKDIR" 2>/dev/null || true
-  sudo rm -f /etc/sudoers.d/90-$ME-ai 2>/dev/null || true
-  echo "✅ Cleanup complete. Starting fresh installation."
-fi
+# Determine if we need sudo
+need_sudo() {
+  if [ "$ME" = "root" ]; then
+    return 1  # False, no sudo needed
+  else
+    if command -v sudo >/dev/null 2>&1; then
+      return 0  # True, sudo exists and needed
+    else
+      echo "Error: Not running as root and sudo not available. Please install sudo or run as root."
+      exit 1
+    fi
+  fi
+}
+
+# Function to run commands with sudo only if needed
+run_elevated() {
+  if need_sudo; then
+    sudo "$@"
+  else
+    "$@"
+  fi
+}
 
 # Create directories and set proper permissions
 mkdir -p "$WORKDIR" "$WORKDIR/bin" "$WORKDIR/logs" "$WORKDIR/ui" "$WORKDIR/tmp"
@@ -27,10 +40,20 @@ chmod 755 "$WORKDIR/bin"
 
 log(){ printf "[%(%F %T)T] %s\n" -1 "$*" | tee -a "$LOG" ; }
 
+# Clean old setup if requested
+if [[ "$*" == *"--clean"* ]] || [[ "$*" == *"-c"* ]]; then
+  echo "🧹 Cleaning old installation..."
+  run_elevated pkill -f ollama 2>/dev/null || true
+  pkill -f "python.*agent.py" 2>/dev/null || true
+  run_elevated rm -rf "$WORKDIR" 2>/dev/null || true
+  run_elevated rm -f /etc/sudoers.d/90-$ME-ai 2>/dev/null || true
+  echo "✅ Cleanup complete. Starting fresh installation."
+fi
+
 install_packages() {
   log "Installing system prerequisites..."
-  sudo apt-get update -y 
-  sudo apt-get install -y --no-install-recommends \
+  run_elevated apt-get update -y 
+  run_elevated apt-get install -y --no-install-recommends \
     python3 python3-venv python3-pip git curl wget build-essential \
     sqlite3 jq unzip net-tools htop tmux lsof nodejs npm
   
@@ -38,16 +61,25 @@ install_packages() {
   NODE_VERSION=$(node -v 2>/dev/null | cut -d'v' -f2 || echo "0.0.0")
   if [[ "$(echo "$NODE_VERSION" | cut -d'.' -f1)" -lt "14" ]]; then
     log "Node.js is too old ($NODE_VERSION). Installing newer version..."
-    curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
-    sudo apt-get install -y nodejs
+    if need_sudo; then
+      curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+      sudo apt-get install -y nodejs
+    else
+      curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+      apt-get install -y nodejs
+    fi
   fi
 }
 
 # ------------------------------------------------------------
-# 1.  password-less sudo so the agent can apt-install later
+# 1.  password-less sudo setup (skip if already root)
 # ------------------------------------------------------------
-log "Configuring password-less sudo for $ME…"
-sudo bash -c "echo '$ME ALL=(ALL) NOPASSWD:ALL' >/etc/sudoers.d/90-$ME-ai && chmod 0440 /etc/sudoers.d/90-$ME-ai"
+if need_sudo; then
+  log "Configuring password-less sudo for $ME…"
+  sudo bash -c "echo '$ME ALL=(ALL) NOPASSWD:ALL' >/etc/sudoers.d/90-$ME-ai && chmod 0440 /etc/sudoers.d/90-$ME-ai"
+else
+  log "Running as root, skipping sudo configuration..."
+fi
 
 # ------------------------------------------------------------
 # 2.  base system packages
@@ -2029,3 +2061,4 @@ echo "
 💡 Options:
   bash bootstrap_infinite_ai.sh --clean  # Clean existing installation before setup
 "
+
