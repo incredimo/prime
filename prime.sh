@@ -533,28 +533,49 @@ API_PORT   = int(os.getenv("INFINITE_AI_PORT", 8000))
 UI_PORT    = int(os.getenv("INFINITE_AI_UI_PORT", 8080))
 # --------------------------------------------------------------
 
+# ---------- Thread-safe SQLite connection ----------
+_thread_local = threading.local()
+
+def get_connection():
+    if not hasattr(_thread_local, "conn"):
+        _thread_local.conn = sqlite3.connect(DB_PATH)
+    return _thread_local.conn
+
+def get_cursor():
+    return get_connection().cursor()
+
 # ---------- memory ----------
-conn = sqlite3.connect(DB_PATH)
-cur  = conn.cursor()
-cur.execute("""CREATE TABLE IF NOT EXISTS convo
+def init_db():
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""CREATE TABLE IF NOT EXISTS convo
                (id INTEGER PRIMARY KEY, ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 role TEXT, content TEXT)""")
-cur.execute("""CREATE TABLE IF NOT EXISTS history
+    cur.execute("""CREATE TABLE IF NOT EXISTS history
                (id INTEGER PRIMARY KEY, ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 goal TEXT, status TEXT DEFAULT 'completed', 
                 output TEXT, duration INTEGER)""")
-conn.commit()
+    conn.commit()
+
+# Initialize the database
+init_db()
 
 def remember(r, c): 
+    conn = get_connection()
+    cur = conn.cursor()
     cur.execute("INSERT INTO convo(role,content) VALUES(?,?)", (r,c))
     conn.commit()
 
 def save_history(goal, status, output, duration):
+    conn = get_connection()
+    cur = conn.cursor()
     cur.execute("INSERT INTO history(goal,status,output,duration) VALUES(?,?,?,?)",
                 (goal, status, output, duration))
     conn.commit()
     
 def get_history(limit=50):
+    conn = get_connection()
+    cur = conn.cursor()
     cur.execute("SELECT id, ts, goal, status, output, duration FROM history ORDER BY ts DESC LIMIT ?", 
                 (limit,))
     columns = ['id', 'timestamp', 'goal', 'status', 'output', 'duration']
@@ -2061,5 +2082,6 @@ echo "
 💡 Options:
   bash prime.sh --clean  # Clean existing installation before setup
 "
+
 
 
