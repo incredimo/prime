@@ -55,7 +55,6 @@ install_packages() {
   log "Installing system prerequisites..."
   run_elevated apt-get update -y 
   run_elevated apt-get install -y --no-install-recommends \
-
     python3 python3-venv python3-pip git curl wget build-essential \
     sqlite3 jq unzip net-tools htop tmux lsof nodejs npm
   
@@ -717,59 +716,28 @@ def ollama_chat(prompt:str) -> str:
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            # First, check if Ollama is running
-            try:
-                check_response = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
-                check_response.raise_for_status()
-            except Exception as check_err:
-                log(f"Ollama service check failed: {str(check_err)}")
-                raise Exception(f"Ollama service not available at {OLLAMA_URL}")
-            
-            # Prepare the payload with stream:false
-            payload = {
-                "model": MODEL,
-                "messages": [
-                    {"role": "system", "content": 
+            payload = {"model": MODEL,
+                    "messages":[{"role":"system","content":
                         "You are an autonomous, root-capable agent inside WSL. "
                         "Return exactly one code block starting with #SH or #PY, "
-                        "or #DONE when finished, or #SELFUPDATE followed by python code to replace agent.py."
-                    },
-                    {"role": "user", "content": prompt}
-                ],
-                "stream": False,  # Explicitly disable streaming
-                "options": {
-                    "temperature": 0.7  # Add reasonable temperature
-                }
-            }
+                        "or #DONE when finished, or #SELFUPDATE followed by python code to replace agent.py."},
+                        {"role":"user","content":prompt}],
+                    "stream": False}  # Set stream to False to get a single response
             
-            # Make the API request with proper headers
-            response = requests.post(
-                f"{OLLAMA_URL}/api/chat", 
-                json=payload,
-                headers={"Content-Type": "application/json"},
-                timeout=600
-            )
-            
-            # Check for HTTP errors
+            # Improved error handling for Ollama API
+            response = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=600)
             response.raise_for_status()
             
-            # Parse the response
             try:
                 response_json = response.json()
+                txt = response_json.get("message", {}).get("content", "").strip()
                 
-                # Extract the content from the message field
-                if "message" in response_json and "content" in response_json["message"]:
-                    txt = response_json["message"]["content"].strip()
+                if not txt:
+                    raise ValueError("Empty response from Ollama")
                     
-                    if not txt:
-                        raise ValueError("Empty response content from Ollama")
-                    
-                    remember("assistant", txt)
-                    log(f"←AI REPLY   {txt[:120]}…")
-                    return txt
-                else:
-                    log(f"Unexpected response structure: {response_json}")
-                    raise ValueError("Invalid response structure from Ollama API")
+                remember("assistant", txt)
+                log(f"←AI REPLY   {txt[:120]}…")
+                return txt
                 
             except json.JSONDecodeError as json_err:
                 log(f"JSON parsing error: {json_err}")
@@ -782,7 +750,7 @@ def ollama_chat(prompt:str) -> str:
                 log("Retrying in 5 seconds...")
                 time.sleep(5)
             else:
-                log(f"FATAL: Failed to connect to Ollama after {max_retries} attempts: {str(e)}")
+                log(f"FATAL: Failed to connect to Ollama after {max_retries} attempts.")
                 return f"""#PY
 print("ERROR: Could not connect to Ollama LLM service.")
 print("Make sure Ollama is running at {OLLAMA_URL}.")
