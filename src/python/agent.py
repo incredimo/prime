@@ -16,7 +16,7 @@ WORKDIR    = pathlib.Path(__file__).resolve().parent
 SKILL_DIR  = WORKDIR / "skills"
 DB_PATH    = WORKDIR / "skills.db"
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
-MODEL      = os.getenv("OLLAMA_MODEL", "gemma3") 
+MODEL      = os.getenv("OLLAMA_MODEL", "gemma3")
 API_PORT   = int(os.getenv("INFINITE_AI_PORT", 8000))
 UI_PORT    = int(os.getenv("INFINITE_AI_UI_PORT", 8080))
 # --------------------------------------------------------------
@@ -41,14 +41,14 @@ def init_db():
                 role TEXT, content TEXT)""")
     cur.execute("""CREATE TABLE IF NOT EXISTS history
                (id INTEGER PRIMARY KEY, ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                goal TEXT, status TEXT DEFAULT 'completed', 
+                goal TEXT, status TEXT DEFAULT 'completed',
                 output TEXT, duration INTEGER)""")
     conn.commit()
 
 # Initialize the database
 init_db()
 
-def remember(r, c): 
+def remember(r, c):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("INSERT INTO convo(role,content) VALUES(?,?)", (r,c))
@@ -60,11 +60,11 @@ def save_history(goal, status, output, duration):
     cur.execute("INSERT INTO history(goal,status,output,duration) VALUES(?,?,?,?)",
                 (goal, status, output, duration))
     conn.commit()
-    
+
 def get_history(limit=50):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT id, ts, goal, status, output, duration FROM history ORDER BY ts DESC LIMIT ?", 
+    cur.execute("SELECT id, ts, goal, status, output, duration FROM history ORDER BY ts DESC LIMIT ?",
                 (limit,))
     columns = ['id', 'timestamp', 'goal', 'status', 'output', 'duration']
     return [dict(zip(columns, row)) for row in cur.fetchall()]
@@ -77,38 +77,79 @@ ws_connections = set()
 def ollama_chat(prompt:str) -> str:
     remember("user", prompt)
     log(f"→AI PROMPT  {prompt[:120]}…")
-    
+
     # Try to connect to Ollama service
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            payload = {"model": MODEL,
-                    "messages":[{"role":"system","content":
+            payload = {
+                "model": MODEL,
+                "messages": [
+                    {"role": "system", "content":
                         "You are an autonomous, root-capable agent inside WSL. "
                         "Return exactly one code block starting with #SH or #PY, "
                         "or #DONE when finished, or #SELFUPDATE followed by python code to replace agent.py."},
-                        {"role":"user","content":prompt}]}
-            
+                    {"role": "user", "content": prompt}
+                ],
+                "stream": False  # Explicitly disable streaming to get a complete response
+            }
+
             # Improved error handling for Ollama API
             response = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=600)
             response.raise_for_status()
-            
+
             try:
-                response_json = response.json()
-                txt = response_json.get("message", {}).get("content", "").strip()
-                
-                if not txt:
-                    raise ValueError("Empty response from Ollama")
-                    
-                remember("assistant", txt)
-                log(f"←AI REPLY   {txt[:120]}…")
-                return txt
-                
-            except json.JSONDecodeError as json_err:
-                log(f"JSON parsing error: {json_err}")
+                # Handle the response based on whether it's streaming or not
+                content_type = response.headers.get('Content-Type', '')
+
+                if 'application/json' in content_type:
+                    # Try to parse as a single JSON object
+                    try:
+                        response_json = response.json()
+                        txt = response_json.get("message", {}).get("content", "").strip()
+
+                        if not txt:
+                            raise ValueError("Empty response from Ollama")
+
+                        remember("assistant", txt)
+                        log(f"←AI REPLY   {txt[:120]}…")
+                        return txt
+                    except json.JSONDecodeError:
+                        # If it fails, it might be a stream of JSON objects
+                        log("Received multiple JSON objects, parsing as stream...")
+
+                        # Split the response by lines and parse each line as a separate JSON object
+                        full_content = ""
+                        for line in response.text.strip().split('\n'):
+                            try:
+                                if line.strip():
+                                    line_json = json.loads(line)
+                                    if "message" in line_json and "content" in line_json["message"]:
+                                        full_content += line_json["message"]["content"]
+                            except json.JSONDecodeError:
+                                log(f"Skipping invalid JSON line: {line[:50]}...")
+
+                        if not full_content:
+                            raise ValueError("Empty content from parsed stream")
+
+                        remember("assistant", full_content)
+                        log(f"←AI REPLY   {full_content[:120]}…")
+                        return full_content
+                else:
+                    # Handle plain text response
+                    txt = response.text.strip()
+                    if not txt:
+                        raise ValueError("Empty response from Ollama")
+
+                    remember("assistant", txt)
+                    log(f"←AI REPLY   {txt[:120]}…")
+                    return txt
+
+            except Exception as e:
+                log(f"Error processing Ollama response: {str(e)}")
                 log(f"Response content: {response.text[:200]}")
                 raise
-                
+
         except Exception as e:
             if attempt < max_retries - 1:
                 log(f"Error connecting to Ollama (attempt {attempt+1}/{max_retries}): {str(e)}")
@@ -148,7 +189,7 @@ async def notify_websockets(data):
             await ws.send_json(data)
         except:
             disconnected.add(ws)
-    
+
     # Remove disconnected websockets
     for ws in disconnected:
         ws_connections.remove(ws)
@@ -158,29 +199,29 @@ def iterate(goal:str, task_id=None):
     start_time = time.time()
     full_output = []
     status = "completed"
-    
+
     try:
         step = ollama_chat(f"Goal: {goal}")
         iteration = 1
-        
+
         while True:
             # Update task status
             if task_id:
                 active_tasks[task_id]["status"] = f"Running (step {iteration})"
                 active_tasks[task_id]["output"] = "\n".join(full_output)
                 asyncio.run(notify_websockets({
-                    "type": "task_update", 
+                    "type": "task_update",
                     "id": task_id,
                     "status": active_tasks[task_id]["status"],
                     "output": active_tasks[task_id]["output"],
                     "step": iteration
                 }))
-            
-            if "#DONE" in step.upper(): 
+
+            if "#DONE" in step.upper():
                 log("Goal complete.")
                 full_output.append("✅ Goal completed successfully.")
                 break
-                
+
             if "#SELFUPDATE" in step.upper():
                 new_code = step.split("#SELFUPDATE",1)[1].strip()
                 (WORKDIR/"agent.py").write_text(new_code)
@@ -188,32 +229,32 @@ def iterate(goal:str, task_id=None):
                 full_output.append("🔄 Agent self-updated. Restarting...")
                 status = "restarting"
                 os.execv(sys.executable, ["python", "agent.py"])
-                
+
             kind, code = extract(step)
-            if not kind: 
+            if not kind:
                 log("No code detected; abort.")
                 full_output.append("❌ No executable code detected. Aborting.")
                 status = "failed"
                 break
-                
+
             out = run_py(code) if kind=="PY" else run_sh(code)
             full_output.append(f"--- Step {iteration} ({kind}) ---")
             full_output.append(code)
             full_output.append(f"--- Output ---")
             full_output.append(out)
-            
+
             step = ollama_chat(f"Output:\n{out}\nNext?")
             iteration += 1
-            
+
     except Exception as e:
         log(f"Error during goal execution: {e}")
         full_output.append(f"❌ Error: {str(e)}")
         status = "failed"
-        
+
     duration = int(time.time() - start_time)
     output_text = "\n".join(full_output)
     save_history(goal, status, output_text, duration)
-    
+
     # Update and remove task if it was being tracked
     if task_id:
         active_tasks[task_id]["status"] = status
@@ -226,7 +267,7 @@ def iterate(goal:str, task_id=None):
             "output": output_text,
             "duration": duration
         }))
-        
+
     return output_text
 
 # ---------- API & UI App ----------
@@ -248,7 +289,7 @@ app.mount("/static", StaticFiles(directory=f"{WORKDIR}/ui/static"), name="static
 templates = Jinja2Templates(directory=f"{WORKDIR}/ui/templates")
 
 # API models
-class Goal(BaseModel): 
+class Goal(BaseModel):
     text: str
 
 class TaskResponse(BaseModel):
@@ -265,7 +306,7 @@ async def api_goal(g: Goal):
         "output": "",
         "created": datetime.datetime.now().isoformat()
     }
-    
+
     # Run the task in a background thread
     thread = threading.Thread(
         target=iterate,
@@ -273,7 +314,7 @@ async def api_goal(g: Goal):
         daemon=True
     )
     thread.start()
-    
+
     return {"id": task_id, "status": "started"}
 
 @app.get("/api/task/{task_id}")
@@ -299,7 +340,7 @@ async def get_logs(limit: int = 100):
 async def get_status():
     ollama_status = "unavailable"
     ollama_models = []
-    
+
     try:
         r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=3)
         if r.status_code == 200:
@@ -308,7 +349,7 @@ async def get_status():
             ollama_models = [m.get("name") for m in models_data if "name" in m]
     except:
         pass
-    
+
     return {
         "agent": "running",
         "ollama": ollama_status,
@@ -322,7 +363,7 @@ async def get_status():
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     ws_connections.add(websocket)
-    
+
     try:
         while True:
             # Keep connection alive
@@ -336,7 +377,7 @@ async def websocket_endpoint(websocket: WebSocket):
 async def stream_logs(request: Request):
     async def event_generator():
         queue = asyncio.Queue()
-        
+
         # Add listener that puts logs onto the queue
         def log_callback(entry):
             # Use create_task instead of run_coroutine_threadsafe
@@ -346,22 +387,22 @@ async def stream_logs(request: Request):
             else:
                 # Fallback if no event loop is running
                 asyncio.run_coroutine_threadsafe(
-                    queue.put(entry), 
+                    queue.put(entry),
                     loop
                 )
-        
+
         # Register the callback
         callback = add_log_listener(log_callback)
-        
+
         try:
             # Send initial data
             yield {"event": "logs", "data": json.dumps(get_recent_logs(50))}
-            
+
             # Stream updates
             while True:
                 if await request.is_disconnected():
                     break
-                    
+
                 # Wait for new logs with timeout
                 try:
                     entry = await asyncio.wait_for(queue.get(), timeout=1.0)
@@ -372,7 +413,7 @@ async def stream_logs(request: Request):
         finally:
             # Clean up
             remove_log_listener(callback)
-    
+
     return EventSourceResponse(event_generator())
 
 # UI routes
@@ -401,7 +442,7 @@ async def submit_goal(goal: str = Form(...)):
         "output": "",
         "created": datetime.datetime.now().isoformat()
     }
-    
+
     # Run the task in a background thread
     thread = threading.Thread(
         target=iterate,
@@ -409,7 +450,7 @@ async def submit_goal(goal: str = Form(...)):
         daemon=True
     )
     thread.start()
-    
+
     return RedirectResponse(url=f"/task/{task_id}", status_code=303)
 
 # CLI interface
@@ -423,21 +464,21 @@ def cli():
 def start_ollama():
     """Try to start Ollama if it's not running"""
     log("Attempting to start Ollama...")
-    
+
     # Try local binary first
     local_bin = WORKDIR / "bin" / "ollama"
     if local_bin.exists() and os.access(local_bin, os.X_OK):
         log(f"Starting Ollama from local binary: {local_bin}")
-        subprocess.Popen([str(local_bin), "serve"], 
+        subprocess.Popen([str(local_bin), "serve"],
                          stdout=open(WORKDIR/"logs/ollama_agent.log", "w"),
                          stderr=subprocess.STDOUT)
         time.sleep(5)
         return check_ollama()
-    
+
     # Try system binary
     try:
         log("Starting Ollama from system path...")
-        subprocess.Popen(["ollama", "serve"], 
+        subprocess.Popen(["ollama", "serve"],
                          stdout=open(WORKDIR/"logs/ollama_agent.log", "w"),
                          stderr=subprocess.STDOUT)
         time.sleep(5)
@@ -454,7 +495,7 @@ def check_ollama():
         models = response.json().get("models", [])
         model_names = [m.get("name") for m in models if "name" in m]
         log(f"Available models: {', '.join(model_names) if model_names else 'none'}")
-        
+
         # Check if our model exists
         if not any(MODEL in name for name in model_names):
             log(f"Warning: Model {MODEL} not found in available models")
@@ -469,7 +510,7 @@ if __name__=="__main__":
     if not check_ollama():
         log(f"Ollama is not running or missing model {MODEL}. Attempting to start...")
         start_ollama()
-        
+
         # If still not working, try a different model
         if not check_ollama() and MODEL == "gemma3":
             log("Trying with a different model...")
@@ -486,7 +527,7 @@ if __name__=="__main__":
     )
     ui_thread.start()
     log(f"🌐 Web UI started at http://localhost:{UI_PORT}")
-    
+
     # Start API server in the main thread
     log(f"🚀 Starting API server on port {API_PORT}")
     __import__("uvicorn").run(app, host="0.0.0.0", port=API_PORT)
