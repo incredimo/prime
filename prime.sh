@@ -599,16 +599,24 @@ def ollama_chat(prompt:str) -> str:
     max_retries = 3
     for attempt in range(max_retries):
         try:
+            # Parse the prompt to extract system message if present
+            system_content = "You are an autonomous, root-capable agent inside WSL. Return exactly one code block starting with #SH or #PY, or #DONE when finished, or #SELFUPDATE followed by python code to replace agent.py."
+            user_content = prompt
+
+            # Check if the prompt contains a system message
+            if prompt.startswith("System:"):
+                parts = prompt.split("\nGoal:", 1)
+                if len(parts) == 2:
+                    system_content = parts[0].replace("System:", "").strip()
+                    user_content = "Goal:" + parts[1].strip()
+
             # According to Ollama API docs, streaming is enabled by default
             # We'll handle both streaming and non-streaming responses
             payload = {
                 "model": MODEL,
                 "messages": [
-                    {"role": "system", "content":
-                        "You are an autonomous, root-capable agent inside WSL. "
-                        "Return exactly one code block starting with #SH or #PY, "
-                        "or #DONE when finished, or #SELFUPDATE followed by python code to replace agent.py."},
-                    {"role": "user", "content": prompt}
+                    {"role": "system", "content": system_content},
+                    {"role": "user", "content": user_content}
                 ],
                 "stream": False  # Explicitly disable streaming to get a complete response
             }
@@ -767,7 +775,29 @@ def iterate(goal:str, task_id=None):
     status = "completed"
 
     try:
-        step = ollama_chat(f"Goal: {goal}")
+        # Initial prompt to the LLM with the goal
+        system_prompt = """You are an autonomous, root-capable agent inside WSL.
+You will be given a goal to accomplish. Break it down into steps and execute them one by one.
+For each step, return exactly one code block starting with #SH or #PY.
+When the goal is completed, return #DONE.
+If you need to update the agent code, return #SELFUPDATE followed by the new code.
+
+Important:
+1. After each step, you will receive the output of your code execution.
+2. If there are errors, fix them in your next step.
+3. Continue until the goal is accomplished or you determine it cannot be completed.
+4. If you're running as root, don't use sudo.
+5. Check the environment before assuming commands are available.
+"""
+
+        # Start with the goal
+        step = ollama_chat(f"""System: {system_prompt}
+Goal: {goal}
+
+Please analyze this goal and break it down into executable steps.
+First, check the environment to understand what commands and tools are available.
+Then proceed with implementing the solution step by step.""")
+
         iteration = 1
 
         while True:
@@ -803,13 +833,33 @@ def iterate(goal:str, task_id=None):
                 status = "failed"
                 break
 
+            # Execute the code
             out = run_py(code) if kind=="PY" else run_sh(code)
+
+            # Add to the full output
             full_output.append(f"--- Step {iteration} ({kind}) ---")
             full_output.append(code)
             full_output.append(f"--- Output ---")
             full_output.append(out)
 
-            step = ollama_chat(f"Output:\n{out}\nNext?")
+            # Provide detailed context to the LLM for the next step
+            prompt = f"""Output from step {iteration}:
+```
+{out}
+```
+
+Based on this output:
+1. Was the step successful? If not, what went wrong?
+2. What should be the next step to accomplish the goal?
+3. If you encounter an error, try to fix it or find an alternative approach.
+4. If the goal is complete, respond with #DONE.
+
+Current goal: {goal}
+Current progress: {iteration} steps completed
+"""
+
+            # Get the next step from the LLM
+            step = ollama_chat(prompt)
             iteration += 1
 
     except Exception as e:
