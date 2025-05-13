@@ -1,3 +1,37 @@
+
+log "Bootstrap completed ✓"
+echo "
+╔═════════════════════════════════════════════════════════════╗
+║ 🚀 INFINITE AI BOOTSTRAP COMPLETED                          ║
+╚═════════════════════════════════════════════════════════════╝
+
+📋 Next steps:
+  cd $WORKDIR
+  ./start_agent.sh    # Runs the agent with Web UI and auto-restart
+
+🌐 Access Web UI:
+  http://localhost:8080
+  http://$(hostname -I | awk '{print $1}'):8080
+
+🤖 If Ollama isn't working in WSL:
+  1. Use the Windows helper script:
+     powershell.exe -ExecutionPolicy Bypass -File C:/repo/prime/windows_ollama_helper.ps1
+  2. This will install and start Ollama on Windows
+  3. WSL will connect to the Windows Ollama instance automatically
+
+🛠️ Available Commands:
+  ./start_ollama.sh   # Start just Ollama service
+  ./run.sh            # Start agent with watchdog and Web UI
+  
+  # API Examples:
+  curl -X POST http://localhost:8000/api/goal -d '{\"text\":\"<your goal>\"}' -H 'Content-Type: application/json'
+  curl http://localhost:8000/api/status
+
+💡 Options:
+  bash prime.sh --clean  # Clean existing installation before setup
+"
+
+
 #!/usr/bin/env bash
 #
 # prime.sh   —  WSL-aware, Ollama-powered, gemma3 agent with UI
@@ -9,6 +43,55 @@ export DEBIAN_FRONTEND=noninteractive
 ME="$(whoami)"
 WORKDIR="$HOME/infinite_ai"
 LOG="$WORKDIR/install.log"
+
+
+# Clean old setup if requested
+if [[ "$*" == *"--clean"* ]] || [[ "$*" == *"-c"* ]]; then
+  echo "🧹 Cleaning old installation..."
+  run_elevated pkill -f ollama 2>/dev/null || true
+  pkill -f "python.*agent.py" 2>/dev/null || true
+  run_elevated rm -rf "$WORKDIR" 2>/dev/null || true
+  run_elevated rm -f /etc/sudoers.d/90-$ME-ai 2>/dev/null || true
+  echo "✅ Cleanup complete. Starting fresh installation."
+fi
+
+
+install_packages() {
+  log "Installing system prerequisites..."
+  run_elevated apt-get update -y
+  run_elevated apt-get install -y --no-install-recommends \
+    python3 python3-venv python3-pip git curl wget build-essential \
+    sqlite3 jq unzip net-tools htop tmux lsof nodejs npm
+
+  # Check if Node.js is too old, install newer version if needed
+  NODE_VERSION=$(node -v 2>/dev/null | cut -d'v' -f2 || echo "0.0.0")
+  if [[ "$(echo "$NODE_VERSION" | cut -d'.' -f1)" -lt "14" ]]; then
+    log "Node.js is too old ($NODE_VERSION). Installing newer version..."
+    if need_sudo; then
+      curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+      sudo apt-get install -y nodejs
+    else
+      curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+      apt-get install -y nodejs
+    fi
+  fi
+}
+
+# ------------------------------------------------------------
+# 1.  password-less sudo setup (skip if already root)
+# ------------------------------------------------------------
+if need_sudo; then
+  log "Configuring password-less sudo for $ME…"
+  sudo bash -c "echo '$ME ALL=(ALL) NOPASSWD:ALL' >/etc/sudoers.d/90-$ME-ai && chmod 0440 /etc/sudoers.d/90-$ME-ai"
+else
+  log "Running as root, skipping sudo configuration..."
+fi
+
+# ------------------------------------------------------------
+# 2.  base system packages
+# ------------------------------------------------------------
+install_packages
+
 
 # Determine if we need sudo
 need_sudo() {
@@ -40,51 +123,6 @@ chmod 755 "$WORKDIR/bin"
 
 log(){ printf "[%(%F %T)T] %s\n" -1 "$*" | tee -a "$LOG" ; }
 
-# Clean old setup if requested
-if [[ "$*" == *"--clean"* ]] || [[ "$*" == *"-c"* ]]; then
-  echo "🧹 Cleaning old installation..."
-  run_elevated pkill -f ollama 2>/dev/null || true
-  pkill -f "python.*agent.py" 2>/dev/null || true
-  run_elevated rm -rf "$WORKDIR" 2>/dev/null || true
-  run_elevated rm -f /etc/sudoers.d/90-$ME-ai 2>/dev/null || true
-  echo "✅ Cleanup complete. Starting fresh installation."
-fi
-
-install_packages() {
-  log "Installing system prerequisites..."
-  run_elevated apt-get update -y 
-  run_elevated apt-get install -y --no-install-recommends \
-    python3 python3-venv python3-pip git curl wget build-essential \
-    sqlite3 jq unzip net-tools htop tmux lsof nodejs npm
-  
-  # Check if Node.js is too old, install newer version if needed
-  NODE_VERSION=$(node -v 2>/dev/null | cut -d'v' -f2 || echo "0.0.0")
-  if [[ "$(echo "$NODE_VERSION" | cut -d'.' -f1)" -lt "14" ]]; then
-    log "Node.js is too old ($NODE_VERSION). Installing newer version..."
-    if need_sudo; then
-      curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
-      sudo apt-get install -y nodejs
-    else
-      curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
-      apt-get install -y nodejs
-    fi
-  fi
-}
-
-# ------------------------------------------------------------
-# 1.  password-less sudo setup (skip if already root)
-# ------------------------------------------------------------
-if need_sudo; then
-  log "Configuring password-less sudo for $ME…"
-  sudo bash -c "echo '$ME ALL=(ALL) NOPASSWD:ALL' >/etc/sudoers.d/90-$ME-ai && chmod 0440 /etc/sudoers.d/90-$ME-ai"
-else
-  log "Running as root, skipping sudo configuration..."
-fi
-
-# ------------------------------------------------------------
-# 2.  base system packages
-# ------------------------------------------------------------
-install_packages
 
 # ------------------------------------------------------------
 # 3.  FUCKING DOWNLOAD AND INSTALL OLLAMA BY BRUTE FORCE
@@ -204,6 +242,7 @@ else
     log "🔄 Will continue with setup, but you need to run the Windows helper script to install Ollama on Windows."
   fi
 fi
+
 
 # ------------------------------------------------------------
 # 4.  Start Ollama service - WITH MULTIPLE APPROACHES
@@ -416,6 +455,7 @@ WIN_PATH="/mnt/c/repo/prime/windows_ollama_helper.ps1"
 cp "$WORKDIR/windows_ollama_helper.ps1" "$WIN_PATH" 2>/dev/null || true
 log "Created Windows helper script at: $WIN_PATH"
 
+
 # ------------------------------------------------------------
 # 7.  python environment
 # ------------------------------------------------------------
@@ -432,6 +472,7 @@ source venv/bin/activate
 log "Installing Python libs..."
 pip install --upgrade pip
 pip install fastapi uvicorn duckdb tiktoken watchdog requests jinja2 aiofiles websockets python-multipart sse-starlette
+
 
 # ------------------------------------------------------------
 # 8.  immutable logger (never self-modified)
@@ -505,6 +546,7 @@ def remove_log_listener(callback):
     if callback in log_listeners:
         log_listeners.remove(callback)
 PY
+
 
 # ------------------------------------------------------------
 # 9.  agent.py  —  now powered by Ollama with Web UI
@@ -1005,10 +1047,12 @@ if __name__=="__main__":
 PY
 chmod +x agent.py
 
+
 # ------------------------------------------------------------
 # 10. Create UI templates
 # ------------------------------------------------------------
 log "Creating UI templates..."
+
 
 # Create CSS file
 mkdir -p "$WORKDIR/ui/static"
@@ -1327,6 +1371,7 @@ textarea {
   }
 }
 CSS
+
 
 # Create JavaScript file for UI functionality
 cat > "$WORKDIR/ui/static/app.js" <<'JS'
@@ -1648,57 +1693,25 @@ document.addEventListener('DOMContentLoaded', function() {
   // Load task history
   loadTaskHistory();
   
-  // Load task details if on task page
-  const taskIdElement = document.getElementById('task-id');
-  if (taskIdElement) {
-    loadTaskDetails(taskIdElement.value);
-  }
-  
   // Update system status
   updateSystemStatus();
-  setInterval(updateSystemStatus, 10000);
   
-  // Refresh lists periodically
+  // Check if we're on a task detail page
+  const taskId = document.getElementById('task-id')?.value;
+  if (taskId) {
+    loadTaskDetails(taskId);
+  }
+  
+  // Refresh data periodically
   setInterval(function() {
     loadActiveTasks();
-    loadTaskHistory();
-  }, 30000);
+    updateSystemStatus();
+  }, 10000);
 });
-
-// Handle task updates from WebSocket
-function updateTaskStatus(data) {
-  // Update task details page if showing this task
-  const taskIdElement = document.getElementById('task-id');
-  if (taskIdElement && taskIdElement.value === data.id) {
-    const taskOutput = document.getElementById('task-output');
-    const taskStatus = document.getElementById('task-status');
-    
-    if (taskOutput) {
-      taskOutput.innerHTML = data.output.replace(/\n/g, '<br>');
-    }
-    
-    if (taskStatus) {
-      taskStatus.textContent = data.status;
-      taskStatus.className = `status status-${data.status.toLowerCase().split(' ')[0]}`;
-    }
-  }
-}
-
-// Handle completed tasks
-function completeTask(data) {
-  // Update task lists
-  loadActiveTasks();
-  loadTaskHistory();
-  
-  // Update task details page if showing this task
-  updateTaskStatus(data);
-}
 JS
 
-# Create HTML templates
-mkdir -p "$WORKDIR/ui/templates"
 
-# Index.html template
+# index.html template
 cat > "$WORKDIR/ui/templates/index.html" <<'HTML'
 <!DOCTYPE html>
 <html lang="en">
@@ -1783,341 +1796,6 @@ cat > "$WORKDIR/ui/templates/index.html" <<'HTML'
 </html>
 HTML
 
-# Logs.html template
-cat > "$WORKDIR/ui/templates/logs.html" <<'HTML'
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Logs - Infinite AI Agent</title>
-    <link rel="stylesheet" href="/static/styles.css">
-</head>
-<body>
-    <div class="container">
-        <header>
-            <div class="logo">
-                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M12 8V4m0 8v-4m0 8v-4m0 8v-4M4 6h16M4 10h16M4 14h16M4 18h16"></path>
-                </svg>
-                <span>Infinite AI Agent</span>
-            </div>
-            <nav>
-                <ul>
-                    <li><a href="/">Home</a></li>
-                    <li><a href="/history">History</a></li>
-                    <li><a href="/logs" class="active">Logs</a></li>
-                </ul>
-            </nav>
-        </header>
-        
-        <div class="card">
-            <div class="card-header">
-                <h2 class="card-title">Live Logs</h2>
-                <div>
-                    WebSocket: <span id="ws-status" class="status-offline">Disconnected</span>
-                </div>
-            </div>
-            <div id="log-console" class="console">
-                <div class="console-line">Connecting to log stream...</div>
-            </div>
-        </div>
-    </div>
-    
-    <script src="/static/app.js"></script>
-</body>
-</html>
-HTML
-
-# History.html template
-cat > "$WORKDIR/ui/templates/history.html" <<'HTML'
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Task History - Infinite AI Agent</title>
-    <link rel="stylesheet" href="/static/styles.css">
-</head>
-<body>
-    <div class="container">
-        <header>
-            <div class="logo">
-                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M12 8V4m0 8v-4m0 8v-4m0 8v-4M4 6h16M4 10h16M4 14h16M4 18h16"></path>
-                </svg>
-                <span>Infinite AI Agent</span>
-            </div>
-            <nav>
-                <ul>
-                    <li><a href="/">Home</a></li>
-                    <li><a href="/history" class="active">History</a></li>
-                    <li><a href="/logs">Logs</a></li>
-                </ul>
-            </nav>
-        </header>
-        
-        <div class="card">
-            <div class="card-header">
-                <h2 class="card-title">Task History</h2>
-            </div>
-            <div id="task-history" class="task-list">
-                <div class="loader"></div>
-            </div>
-        </div>
-    </div>
-    
-    <script src="/static/app.js"></script>
-</body>
-</html>
-HTML
-
-# Task.html template
-cat > "$WORKDIR/ui/templates/task.html" <<'HTML'
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Task Details - Infinite AI Agent</title>
-    <link rel="stylesheet" href="/static/styles.css">
-</head>
-<body>
-    <div class="container">
-        <header>
-            <div class="logo">
-                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M12 8V4m0 8v-4m0 8v-4m0 8v-4M4 6h16M4 10h16M4 14h16M4 18h16"></path>
-                </svg>
-                <span>Infinite AI Agent</span>
-            </div>
-            <nav>
-                <ul>
-                    <li><a href="/">Home</a></li>
-                    <li><a href="/history">History</a></li>
-                    <li><a href="/logs">Logs</a></li>
-                </ul>
-            </nav>
-        </header>
-        
-        <input type="hidden" id="task-id" value="{{ task_id }}">
-        
-        <div class="card">
-            <div class="card-header">
-                <div>
-                    <h2 class="card-title">Task Details</h2>
-                    <div id="task-goal" style="margin-top: 5px;">Loading...</div>
-                </div>
-                <div>
-                    Status: <span id="task-status" class="status status-loading">Loading...</span>
-                </div>
-            </div>
-            <div class="output-code" id="task-output">
-                Loading task details...
-            </div>
-            <div style="margin-top: 15px;">
-                <a href="/" class="button button-secondary">Back to Home</a>
-            </div>
-        </div>
-    </div>
-    
-    <script src="/static/app.js"></script>
-</body>
-</html>
-HTML
-
-# ------------------------------------------------------------
-# 11.  watchdog launcher with Web UI support
-# ------------------------------------------------------------
-cat > run.sh <<'SH'
-#!/usr/bin/env bash
-cd "$(dirname "$0")" || exit 1
-source venv/bin/activate
-
-# Function to check if Ollama is running
-check_ollama() {
-  curl -s --max-time 3 "http://127.0.0.1:11434/api/tags" >/dev/null 2>&1
-}
-
-# Function to check Windows Ollama
-check_windows_ollama() {
-  WIN_IP=$(ip route | grep default | awk '{print $3}' 2>/dev/null || echo "localhost")
-  curl -s --max-time 3 "http://$WIN_IP:11434/api/tags" >/dev/null 2>&1
-}
-
-# Function to start Ollama
-start_ollama() {
-  echo "[watchdog] Starting Ollama service..."
-  
-  # Try local binary first
-  if [[ -x "$PWD/bin/ollama" ]]; then
-    echo "[watchdog] Using local Ollama binary"
-    nohup "$PWD/bin/ollama" serve > logs/ollama_watchdog.log 2>&1 &
-    OLLAMA_PID=$!
-    echo "[watchdog] Started Ollama with PID $OLLAMA_PID"
-  else
-    # Try system binary
-    if command -v ollama >/dev/null 2>&1; then
-      echo "[watchdog] Using system Ollama binary"
-      nohup ollama serve > logs/ollama_watchdog.log 2>&1 &
-      OLLAMA_PID=$!
-      echo "[watchdog] Started Ollama with PID $OLLAMA_PID"
-    else
-      echo "[watchdog] No Ollama binary found. Please install it manually."
-    fi
-  fi
-  
-  # Wait for Ollama to start
-  for i in {1..10}; do
-    if check_ollama; then
-      echo "[watchdog] Ollama service is now available!"
-      return 0
-    fi
-    echo "[watchdog] Waiting for Ollama service (attempt $i/10)..."
-    sleep 2
-  done
-  
-  # Check if Ollama is running on Windows
-  if check_windows_ollama; then
-    echo "[watchdog] Found Ollama running on Windows side."
-    WIN_IP=$(ip route | grep default | awk '{print $3}' 2>/dev/null || echo "localhost")
-    export OLLAMA_URL="http://$WIN_IP:11434"
-    echo "[watchdog] Using Windows Ollama at $OLLAMA_URL"
-    return 0
-  fi
-  
-  echo "[watchdog] Warning: Could not start Ollama service."
-  echo "[watchdog] Consider using the Windows helper script or start Ollama manually."
-  return 1
-}
-
-# Get IP address for display
-get_ip() {
-  hostname -I | awk '{print $1}'
-}
-
-# Help ensure Ollama is running
-OLLAMA_RUNNING=false
-if check_ollama; then
-  echo "[watchdog] Ollama service already running."
-  OLLAMA_RUNNING=true
-elif check_windows_ollama; then
-  echo "[watchdog] Found Ollama running on Windows side."
-  WIN_IP=$(ip route | grep default | awk '{print $3}' 2>/dev/null || echo "localhost")
-  export OLLAMA_URL="http://$WIN_IP:11434"
-  echo "[watchdog] Using Windows Ollama at $OLLAMA_URL"
-  OLLAMA_RUNNING=true
-else
-  echo "[watchdog] Ollama service not running. Attempting to start..."
-  if start_ollama; then
-    OLLAMA_RUNNING=true
-  else
-    echo "[watchdog] Failed to start Ollama service."
-    exit 1
-  fi
-fi
-
-# Start the agent
-echo "[watchdog] Starting Infinite AI Agent..."
-nohup ./agent.py > logs/agent.log 2>&1 &
-AGENT_PID=$!
-echo "[watchdog] Infinite AI Agent started with PID $AGENT_PID"
-
-# Monitor the agent process
-while true; do
-  if ! kill -0 "$AGENT_PID" 2>/dev/null; then
-    echo "[watchdog] Infinite AI Agent process terminated. Restarting..."
-    nohup ./agent.py > logs/agent.log 2>&1 &
-    AGENT_PID=$!
-    echo "[watchdog] Infinite AI Agent restarted with PID $AGENT_PID"
-  fi
-  sleep 10
-done
-SH
-chmod +x run.sh
-
-# ------------------------------------------------------------
-# 12.  Start the agent
-# ------------------------------------------------------------
-log "Starting the agent..."
-./run.sh
-  echo "[watchdog] Ollama service running on Windows side."
-  WIN_IP=$(ip route | grep default | awk '{print $3}' 2>/dev/null || echo "localhost")
-  export OLLAMA_URL="http://$WIN_IP:11434"
-  echo "[watchdog] Using Windows Ollama at $OLLAMA_URL"
-  OLLAMA_RUNNING=true
-else
-  echo "[watchdog] Ollama service not detected. Attempting to start it..."
-  start_ollama && OLLAMA_RUNNING=true
-fi
-
-if [[ "$OLLAMA_RUNNING" == "false" ]]; then
-  echo "[watchdog] ⚠️ WARNING: Could not find or start Ollama."
-  echo "[watchdog] 🔄 Run the Windows helper script:"
-  echo "[watchdog] powershell.exe -ExecutionPolicy Bypass -File C:/repo/prime/windows_ollama_helper.ps1"
-fi
-
-# Display access information
-echo "==================================================="
-echo "🚀 Infinite AI Agent is starting up"
-echo "==================================================="
-echo ""
-echo "🌐 Web UI will be available at:"
-echo "   http://localhost:8080"
-echo "   http://$(get_ip):8080"
-echo ""
-echo "🔗 REST API will be available at:"
-echo "   http://localhost:8000"
-echo "   http://$(get_ip):8000"
-echo ""
-echo "==================================================="
-
-# Main agent watchdog loop
-while true; do
-  ./agent.py || true
-  echo "[watchdog] agent exited — restarting in 5 s" | tee -a logs/watchdog.log
-  sleep 5
-done
-SH
-chmod +x run.sh
-
-# ------------------------------------------------------------
-# 12. Create handy shortcut scripts
-# ------------------------------------------------------------
-cat > start_agent.sh <<'SH'
-#!/usr/bin/env bash
-cd "$(dirname "$0")" || exit 1
-./run.sh
-SH
-chmod +x start_agent.sh
-
-cat > start_ollama.sh <<'SH'
-#!/usr/bin/env bash
-cd "$(dirname "$0")" || exit 1
-
-# Check if Ollama is already running
-if curl -s --max-time 3 "http://127.0.0.1:11434/api/tags" >/dev/null 2>&1; then
-  echo "Ollama is already running."
-  exit 0
-fi
-
-# Try local binary first
-if [[ -x "$PWD/bin/ollama" ]]; then
-  echo "Starting local Ollama binary..."
-  exec "$PWD/bin/ollama" serve
-else
-  # Try system binary
-  if command -v ollama >/dev/null 2>&1; then
-    echo "Starting system Ollama binary..."
-    exec ollama serve
-  else
-    echo "Error: No Ollama binary found."
-    echo "Please install Ollama or use the Windows helper script."
-    exit 1
-  fi
-fi
-SH
-chmod +x start_ollama.sh
 
 log "Bootstrap completed ✓"
 echo "
@@ -2150,11 +1828,3 @@ echo "
 💡 Options:
   bash prime.sh --clean  # Clean existing installation before setup
 "
-
-
-
-
-
-
-
-

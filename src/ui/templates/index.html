@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Infinite AI Agent</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 8V4m0 8v-4m0 8v-4m0 8v-4M4 6h16M4 10h16M4 14h16M4 18h16"></path>
+                </svg>
+                <span>Infinite AI Agent</span>
+            </div>
+            <nav>
+                <ul>
+                    <li><a href="/" class="active">Home</a></li>
+                    <li><a href="/history">History</a></li>
+                    <li><a href="/logs">Logs</a></li>
+                </ul>
+            </nav>
+        </header>
+        
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">System Status</h2>
+                <div>
+                    WebSocket: <span id="ws-status" class="status-offline">Disconnected</span>
+                </div>
+            </div>
+            <div class="status-dashboard" id="system-status">
+                <div class="status-card">
+                    <h3>Ollama Service</h3>
+                    <div id="ollama-status" class="status-value">Checking...</div>
+                </div>
+                <div class="status-card">
+                    <h3>Current Model</h3>
+                    <div id="current-model" class="status-value">-</div>
+                </div>
+                <div class="status-card">
+                    <h3>Active Tasks</h3>
+                    <div id="active-tasks-count" class="status-value">0</div>
+                </div>
+                <div class="status-card">
+                    <h3>Available Models</h3>
+                    <div id="available-models" class="status-value">-</div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">Submit New Goal</h2>
+            </div>
+            <form action="/submit" method="post">
+                <div class="form-group">
+                    <label for="goal">What would you like the AI to do?</label>
+                    <textarea id="goal" name="goal" placeholder="Enter your goal, task or question here..." required></textarea>
+                </div>
+                <div class="form-group">
+                    <button type="submit" class="button">Submit Goal</button>
+                </div>
+            </form>
+        </div>
+        
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">Active Tasks</h2>
+            </div>
+            <div id="active-tasks" class="task-list">
+                <div class="loader"></div>
+            </div>
+        </div>
+    </div>
+    
+    <script src="/static/app.js"></script>
+</body>
+</html>
