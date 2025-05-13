@@ -600,15 +600,30 @@ def ollama_chat(prompt:str) -> str:
                         "Return exactly one code block starting with #SH or #PY, "
                         "or #DONE when finished, or #SELFUPDATE followed by python code to replace agent.py."},
                         {"role":"user","content":prompt}]}
-            r = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=600)
-            r.raise_for_status()
-            txt = r.json()["message"]["content"].strip()
-            remember("assistant", txt)
-            log(f"←AI REPLY   {txt[:120]}…")
-            return txt
+            
+            # Improved error handling for Ollama API
+            response = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=600)
+            response.raise_for_status()
+            
+            try:
+                response_json = response.json()
+                txt = response_json.get("message", {}).get("content", "").strip()
+                
+                if not txt:
+                    raise ValueError("Empty response from Ollama")
+                    
+                remember("assistant", txt)
+                log(f"←AI REPLY   {txt[:120]}…")
+                return txt
+                
+            except json.JSONDecodeError as json_err:
+                log(f"JSON parsing error: {json_err}")
+                log(f"Response content: {response.text[:200]}")
+                raise
+                
         except Exception as e:
             if attempt < max_retries - 1:
-                log(f"Error connecting to Ollama (attempt {attempt+1}/{max_retries}): {e}")
+                log(f"Error connecting to Ollama (attempt {attempt+1}/{max_retries}): {str(e)}")
                 log("Retrying in 5 seconds...")
                 time.sleep(5)
             else:
@@ -835,15 +850,20 @@ async def stream_logs(request: Request):
         queue = asyncio.Queue()
         
         # Add listener that puts logs onto the queue
-        async def log_callback(entry):
-            await queue.put(entry)
+        def log_callback(entry):
+            # Use create_task instead of run_coroutine_threadsafe
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.create_task(queue.put(entry))
+            else:
+                # Fallback if no event loop is running
+                asyncio.run_coroutine_threadsafe(
+                    queue.put(entry), 
+                    loop
+                )
         
-        # Use a wrapper function to adapt the sync callback to async
-        def adapter(entry):
-            asyncio.run_coroutine_threadsafe(log_callback(entry), asyncio.get_event_loop())
-        
-        # Register and store the adapter
-        callback = add_log_listener(adapter)
+        # Register the callback
+        callback = add_log_listener(log_callback)
         
         try:
             # Send initial data
@@ -955,10 +975,51 @@ def start_ollama():
         log("Could not start Ollama. Please start it manually.")
         return False
 
+def check_ollama():
+    """Check if Ollama is running and responding correctly"""
+    try:
+        # First try a simple ping to the API
+        response = requests.get(f"{OLLAMA_URL}/api/tags", timeout=3)
+        response.raise_for_status()
+        
+        # Try a simple completion to verify it's working properly
+        test_payload = {
+            "model": MODEL,
+            "messages": [
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": "Say hello"}
+            ]
+        }
+        
+        response = requests.post(f"{OLLAMA_URL}/api/chat", json=test_payload, timeout=10)
+        response.raise_for_status()
+        
+        # Verify we can parse the response
+        response_json = response.json()
+        if "message" in response_json and "content" in response_json["message"]:
+            log(f"Ollama is working correctly with model: {MODEL}")
+            return True
+        else:
+            log("Ollama response format is unexpected")
+            return False
+            
+    except Exception as e:
+        log(f"Ollama check failed: {str(e)}")
+        return False
+
 if __name__=="__main__":
-    # Start Ollama if needed
+    # Start Ollama if needed and verify it's working
     if not check_ollama():
+        log("Attempting to restart Ollama...")
         start_ollama()
+        
+        # If still not working, try to use a different model
+        if not check_ollama() and MODEL == "gemma3":
+            log("Trying with a different model...")
+            # Try with a simpler model
+            MODEL = "llama2"
+            if not check_ollama():
+                log("Still having issues with Ollama. Please check the service manually.")
     
     # Start Web UI in a separate thread
     ui_thread = threading.Thread(
@@ -1973,6 +2034,45 @@ if check_ollama; then
   echo "[watchdog] Ollama service already running."
   OLLAMA_RUNNING=true
 elif check_windows_ollama; then
+  echo "[watchdog] Found Ollama running on Windows side."
+  WIN_IP=$(ip route | grep default | awk '{print $3}' 2>/dev/null || echo "localhost")
+  export OLLAMA_URL="http://$WIN_IP:11434"
+  echo "[watchdog] Using Windows Ollama at $OLLAMA_URL"
+  OLLAMA_RUNNING=true
+else
+  echo "[watchdog] Ollama service not running. Attempting to start..."
+  if start_ollama; then
+    OLLAMA_RUNNING=true
+  else
+    echo "[watchdog] Failed to start Ollama service."
+    exit 1
+  fi
+fi
+
+# Start the agent
+echo "[watchdog] Starting Infinite AI Agent..."
+nohup ./agent.py > logs/agent.log 2>&1 &
+AGENT_PID=$!
+echo "[watchdog] Infinite AI Agent started with PID $AGENT_PID"
+
+# Monitor the agent process
+while true; do
+  if ! kill -0 "$AGENT_PID" 2>/dev/null; then
+    echo "[watchdog] Infinite AI Agent process terminated. Restarting..."
+    nohup ./agent.py > logs/agent.log 2>&1 &
+    AGENT_PID=$!
+    echo "[watchdog] Infinite AI Agent restarted with PID $AGENT_PID"
+  fi
+  sleep 10
+done
+SH
+chmod +x run.sh
+
+# ------------------------------------------------------------
+# 12.  Start the agent
+# ------------------------------------------------------------
+log "Starting the agent..."
+./run.sh
   echo "[watchdog] Ollama service running on Windows side."
   WIN_IP=$(ip route | grep default | awk '{print $3}' 2>/dev/null || echo "localhost")
   export OLLAMA_URL="http://$WIN_IP:11434"
@@ -2082,6 +2182,9 @@ echo "
 💡 Options:
   bash prime.sh --clean  # Clean existing installation before setup
 "
+
+
+
 
 
 
