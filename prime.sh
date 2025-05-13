@@ -518,7 +518,7 @@ cat > agent.py <<'PY'
 #!/usr/bin/env python3
 import os, sys, subprocess, uuid, sqlite3, pathlib, json, time, datetime, threading, textwrap, re, requests, asyncio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Form
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
@@ -536,13 +536,12 @@ OLLAMA_URL    = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
 MODEL         = os.getenv("OLLAMA_MODEL", "gemma3")
 API_PORT      = int(os.getenv("INFINITE_AI_PORT", 8000))
 UI_PORT       = int(os.getenv("INFINITE_AI_UI_PORT", 8080))
-MESSAGES_DIR  = WORKDIR / "messages"
+LOGS_DIR      = WORKDIR / "logs"
 MAX_CONTEXT   = 4000  # approximate token limit for truncation
-LOG_DIR       = WORKDIR / "logs"
 
-# Ensure message storage and log directories exist
-MESSAGES_DIR.mkdir(exist_ok=True)
-LOG_DIR.mkdir(exist_ok=True)
+# Ensure directories exist
+SKILL_DIR.mkdir(exist_ok=True)
+LOGS_DIR.mkdir(exist_ok=True)
 
 # --------------------------- DB & Memory ---------------------------
 
@@ -558,6 +557,7 @@ def init_db():
     cur = conn.cursor()
     cur.execute("CREATE TABLE IF NOT EXISTS convo (id INTEGER PRIMARY KEY, ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP, role TEXT, content TEXT)")
     cur.execute("CREATE TABLE IF NOT EXISTS history (id INTEGER PRIMARY KEY, ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP, goal TEXT, status TEXT DEFAULT 'completed', output TEXT, duration INTEGER)")
+    cur.execute("CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY, task_id TEXT, goal TEXT, created TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
     conn.commit()
 
 init_db()
@@ -591,70 +591,95 @@ def remember(role, content):
     cur.execute("INSERT INTO convo(role,content) VALUES(?,?)", (role, content))
     conn.commit()
 
-# --------------------------- Message Persistence ---------------------------
+# --------------------------- Task ID Generator ---------------------------
 
-def save_message(convo_id: str, direction: str, content: str):
-    """Store each message (in/out/func_result) with timestamp and direction."""
-    convo_path = MESSAGES_DIR / convo_id
-    convo_path.mkdir(parents=True, exist_ok=True)
+def get_next_task_id():
+    """Generate sequential task IDs starting from 100000001"""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT MAX(id) FROM tasks")
+    result = cur.fetchone()[0]
     
-    # Create sortable timestamp (YYYYMMDD_HHMMSS_ms)
-    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    # If no tasks yet, start with 100000001
+    if result is None:
+        return "100000001"
     
-    # Create filename with timestamp and direction
-    filename = f"{ts}_{direction}.json"
-    filepath = convo_path / filename
+    # Otherwise increment the last ID
+    return str(int(result) + 1)
+
+def register_task(task_id, goal):
+    """Register a new task in the database"""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO tasks(id, task_id, goal) VALUES(?,?,?)", 
+               (int(task_id), task_id, goal))
+    conn.commit()
+
+# --------------------------- Message Logging ---------------------------
+
+def save_task_log(task_id, log_type, content):
+    """
+    Save a log entry for a task with proper naming convention
     
-    # Save structured message data
+    log_type options:
+    - user_to_system: User input to the system
+    - system_to_llm: System prompt to LLM
+    - llm_to_system: LLM response to system
+    - system_shell_execution: System shell execution
+    """
+    # Create task directory if it doesn't exist
+    task_dir = LOGS_DIR / task_id
+    task_dir.mkdir(exist_ok=True)
+    
+    # Create timestamp
+    timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+    
+    # Create filename with requested format
+    filename = f"{task_id}_{timestamp}_{log_type}.md"
+    filepath = task_dir / filename
+    
+    # Write content to file with proper markdown formatting
     with open(filepath, 'w', encoding='utf-8') as f:
-        json.dump({
-            "timestamp": ts,
-            "direction": direction,
-            "content": content
-        }, f, ensure_ascii=False)
+        f.write(f"# Task {task_id} - {log_type.replace('_', ' ').title()}\n\n")
+        f.write(f"Timestamp: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+        f.write("```\n")
+        f.write(content)
+        f.write("\n```\n")
+    
+    # Real-time log to terminal as well
+    log(f"[{log_type}] Task {task_id} log saved to {filename}")
     
     return filepath
 
-def get_conversation_history(convo_id: str, max_tokens=MAX_CONTEXT):
-    """Load message history for a conversation with truncation"""
-    convo_path = MESSAGES_DIR / convo_id
-    messages = []
-    total_tokens = 0
+def get_task_logs(task_id):
+    """Get all logs for a task in chronological order"""
+    task_dir = LOGS_DIR / task_id
     
-    if not convo_path.exists():
-        return messages
+    if not task_dir.exists():
+        return []
     
-    # Get all files in sorted order (oldest to newest)
-    files = sorted(convo_path.iterdir())
+    log_files = sorted(task_dir.glob(f"{task_id}_*.md"))
+    logs = []
     
-    # Process files from newest to oldest to prioritize recent context
-    for file in reversed(files):
-        try:
-            data = json.loads(file.read_text(encoding='utf-8'))
-            content = data["content"]
-            direction = data["direction"]
-            
-            # Estimate tokens (1 token ≈ 4 characters)
-            token_estimate = len(content) / 4
-            
-            # Check if adding this would exceed token limit
-            if total_tokens + token_estimate > max_tokens:
-                # Add a note about truncation at the beginning
-                messages.insert(0, {
-                    "role": "system", 
-                    "content": f"[Note: {len(files) - len(messages)} earlier messages were truncated to stay within context limits]"
-                })
-                break
-            
-            # Add to messages (at beginning since we're processing newest to oldest)
-            role = "assistant" if direction == "out" else "user"
-            messages.insert(0, {"role": role, "content": content})
-            total_tokens += token_estimate
-            
-        except Exception as e:
-            log(f"Error loading message file {file}: {e}")
+    for file in log_files:
+        filename = file.name
+        parts = filename.replace('.md', '').split('_')
+        
+        # Skip if filename doesn't have the expected format
+        if len(parts) < 4:
+            continue
+        
+        timestamp = parts[1]
+        log_type = '_'.join(parts[2:])
+        
+        logs.append({
+            "filename": filename,
+            "timestamp": timestamp,
+            "type": log_type,
+            "path": str(file)
+        })
     
-    return messages
+    return logs
 
 # --------------------------- Environment Context ---------------------------
 
@@ -678,6 +703,14 @@ def get_environment_context():
         # Get working directory
         context['working_dir'] = run_sh("pwd").strip()
         
+        # Check if docker is installed and running
+        docker_status = run_sh("command -v docker >/dev/null 2>&1 && echo 'installed' || echo 'not installed'").strip()
+        context['docker_status'] = docker_status
+        
+        if docker_status == 'installed':
+            docker_running = run_sh("systemctl is-active docker 2>/dev/null || echo 'unknown'").strip()
+            context['docker_running'] = docker_running
+        
     except Exception as e:
         log(f"Error getting environment context: {e}")
         context['error'] = str(e)
@@ -699,6 +732,8 @@ def execute_functions(functions, task_id):
     results = []
     
     for func_name, args in functions:
+        log(f"Executing function {func_name}({args}) for task {task_id}")
+        
         if func_name == "read_file":
             # Simple file reading with limits
             path = args.strip('"\'')
@@ -708,17 +743,26 @@ def execute_functions(functions, task_id):
                 if len(content) > 4000:  # Reasonable limit to avoid token explosion
                     content = content[:2000] + "\n...[content truncated]...\n" + content[-2000:]
                 results.append(f"#FILE_CONTENT from {path}\n{content}\n#END_FILE_CONTENT")
+                
+                # Log function execution
+                save_task_log(task_id, "system_function_execution", f"read_file({path})\n\nResult truncated, showing {min(len(content), 4000)} of {len(content)} characters")
+                
             except Exception as e:
-                results.append(f"Error reading file {path}: {e}")
+                error_msg = f"Error reading file {path}: {e}"
+                results.append(error_msg)
+                save_task_log(task_id, "system_function_execution", f"read_file({path})\n\nError: {e}")
                 
         elif func_name == "check_status":
             # Check status of a running task
-            t_id = args.strip('"\' ') or task_id
-            if t_id in active_tasks:
-                status = active_tasks[t_id]["status"]
-                results.append(f"Task {t_id} status: {status}")
+            target_task = args.strip('"\' ') or task_id
+            if target_task in active_tasks:
+                status = active_tasks[target_task]["status"]
+                results.append(f"Task {target_task} status: {status}")
             else:
-                results.append(f"Task {t_id} not found")
+                results.append(f"Task {target_task} not found")
+            
+            # Log function execution
+            save_task_log(task_id, "system_function_execution", f"check_status({target_task})\n\nResult: {'Task found, status: ' + active_tasks[target_task]['status'] if target_task in active_tasks else 'Task not found'}")
                 
         elif func_name == "wait":
             # Implement wait functionality
@@ -727,9 +771,30 @@ def execute_functions(functions, task_id):
                 max_wait = 60  # Cap at 60 seconds to prevent abuse
                 wait_time = min(seconds, max_wait)
                 results.append(f"Waiting for {wait_time} seconds...")
+                
+                # Log function execution
+                save_task_log(task_id, "system_function_execution", f"wait({seconds})\n\nWaiting for {wait_time} seconds")
+                
                 return (results, wait_time)  # Special return for wait
             except ValueError:
-                results.append(f"Invalid wait duration: {args}")
+                error_msg = f"Invalid wait duration: {args}"
+                results.append(error_msg)
+                save_task_log(task_id, "system_function_execution", f"wait({args})\n\nError: Invalid wait duration")
+                
+        elif func_name == "list_directory":
+            # List directory contents
+            path = args.strip('"\' ') or "."
+            try:
+                dir_content = run_sh(f"ls -la {path}")
+                results.append(f"Directory listing for {path}:\n{dir_content}")
+                
+                # Log function execution
+                save_task_log(task_id, "system_function_execution", f"list_directory({path})\n\nResult: {len(dir_content.splitlines())} items listed")
+                
+            except Exception as e:
+                error_msg = f"Error listing directory {path}: {e}"
+                results.append(error_msg)
+                save_task_log(task_id, "system_function_execution", f"list_directory({path})\n\nError: {e}")
     
     return (results, 0)  # Normal return with no wait
 
@@ -761,7 +826,7 @@ def extract(txt: str):
         return (m_backticks.group(1), textwrap.dedent(m_backticks.group(2)))
     
     # If no backtick format found, try the original format
-    m = re.search(r"^#(SH|PY)\s*\n(.*)", txt, re.DOTALL)
+    m = re.search(r"#(SH|PY)\s*\n(.*)", txt, re.DOTALL)
     return (m.group(1), textwrap.dedent(m.group(2))) if m else (None, None)
 
 def clean_code(code: str) -> str:
@@ -833,10 +898,13 @@ def validate_code(code: str, kind: str) -> tuple:
 
 # --------------------------- Ollama Chat ---------------------------
 
-def ollama_chat(prompt: str, history=None):
-    """Enhanced chat function with history management and truncation"""
+def ollama_chat(prompt: str, task_id: str, history=None):
+    """Enhanced chat function with history management, truncation, and logging"""
     remember("user", prompt)
     log(f"→AI PROMPT {prompt[:120]}…")
+    
+    # Log the full prompt to task logs
+    save_task_log(task_id, "system_to_llm", prompt)
     
     # Prepare messages
     messages = []
@@ -920,6 +988,10 @@ def ollama_chat(prompt: str, history=None):
                 
                 remember("assistant", txt)
                 log(f"←AI REPLY {txt[:120]}…")
+                
+                # Log the full response to task logs
+                save_task_log(task_id, "llm_to_system", txt)
+                
                 return txt
                 
             except json.JSONDecodeError:
@@ -951,12 +1023,17 @@ def ollama_chat(prompt: str, history=None):
                     # Try to extract any text content from the response
                     if response.text:
                         log("Attempting to extract text content directly")
+                        save_task_log(task_id, "llm_to_system", response.text.strip())
                         return response.text.strip()
                     else:
                         raise ValueError("Empty response from Ollama")
                 
                 remember("assistant", full_content)
                 log(f"←AI REPLY {full_content[:120]}…")
+                
+                # Log the full response to task logs
+                save_task_log(task_id, "llm_to_system", full_content)
+                
                 return full_content
                 
         except Exception as e:
@@ -966,13 +1043,15 @@ def ollama_chat(prompt: str, history=None):
                 time.sleep(5)
             else:
                 log(f"FATAL: Failed to connect to Ollama after {max_retries} attempts.")
-                return f"""#PY
+                error_response = f"""#PY
 print("ERROR: Could not connect to Ollama LLM service.")
 print("Make sure Ollama is running at {OLLAMA_URL}.")
 print("You can:")
 print("1. Start Ollama manually with 'ollama serve'")
 print("2. Or use the Windows helper script in {WORKDIR}")
 """
+                save_task_log(task_id, "llm_to_system", f"ERROR: Failed to connect to Ollama after {max_retries} attempts.\n\n{error_response}")
+                return error_response
 
 # --------------------------- Main Iteration Loop ---------------------------
 
@@ -991,28 +1070,31 @@ def wait_and_continue(goal, task_id, wait_time):
             "output": active_tasks[task_id].get("output", "")
         }))
     
-    # Get the latest conversation history
-    history = get_conversation_history(task_id)
-    
     # Create prompt with wait completion notification
     prompt = f"""The wait period of {wait_time} seconds has completed.
 Please continue with the goal: {goal}
 
-You can check status or execution logs using #CALL read_file(path).
+You can:
+1. Execute code with #SH or #PY blocks
+2. Check files with #CALL read_file(path)
+3. List directory contents with #CALL list_directory(path)
+4. Finish with #DONE when complete
 """
     
     # Continue the iteration
-    iterate_next_step(goal, task_id, prompt, history)
+    iterate_next_step(goal, task_id, prompt)
 
-def iterate_next_step(goal, task_id, prompt, history=None):
+def iterate_next_step(goal, task_id, prompt, extract_history=False):
     """Continue iteration with a new prompt"""
+    # Get history if requested
+    history = get_task_conversation(task_id) if extract_history else None
+    
     # Send to LLM
-    response = ollama_chat(prompt, history)
-    save_message(task_id, "out", response)
+    response = ollama_chat(prompt, task_id, history)
     
     # Update task output
     if task_id in active_tasks:
-        active_tasks[task_id]["output"] += f"\n--- Continued after wait ---\n{response}"
+        active_tasks[task_id]["output"] += f"\n--- Continued ---\n{response}"
         active_tasks[task_id]["last_response"] = response
     
     # Create a new thread to process this response
@@ -1022,6 +1104,49 @@ def iterate_next_step(goal, task_id, prompt, history=None):
         daemon=True
     )
     thread.start()
+
+def get_task_conversation(task_id):
+    """Build conversation history from task logs"""
+    messages = []
+    task_dir = LOGS_DIR / task_id
+    
+    if not task_dir.exists():
+        return messages
+    
+    # Get all log files and sort by timestamp
+    log_files = sorted(task_dir.glob(f"{task_id}_*.md"))
+    
+    for file in log_files:
+        filename = file.name
+        parts = filename.replace('.md', '').split('_')
+        
+        # Skip if filename doesn't have the expected format
+        if len(parts) < 4:
+            continue
+        
+        log_type = '_'.join(parts[2:])
+        
+        # We only want LLM communication logs for history
+        if log_type not in ["system_to_llm", "llm_to_system"]:
+            continue
+        
+        try:
+            content = read_file(file)
+            # Extract content between triple backticks
+            match = re.search(r"```\n(.*?)\n```", content, re.DOTALL)
+            if match:
+                message_content = match.group(1).strip()
+                role = "user" if log_type == "system_to_llm" else "assistant"
+                messages.append({"role": role, "content": message_content})
+        except Exception as e:
+            log(f"Error reading log file {file}: {e}")
+    
+    # If we have too many messages, keep only the most recent ones
+    if len(messages) > 10:
+        # Keep the first system message for context, then the most recent messages
+        messages = messages[:1] + messages[-9:]
+    
+    return messages
 
 def process_response(response, goal, task_id):
     """Process a response from the LLM (execute code, handle functions, etc.)"""
@@ -1035,6 +1160,9 @@ def process_response(response, goal, task_id):
         output += "\n✅ Goal completed successfully."
         active_tasks[task_id]["status"] = "completed"
         active_tasks[task_id]["output"] = output
+        
+        # Save task log
+        save_task_log(task_id, "system_task_complete", "Goal completed successfully")
         
         # Notify websockets
         asyncio.run(notify_websockets({
@@ -1057,22 +1185,36 @@ def process_response(response, goal, task_id):
             output += f"\n❌ Self-update rejected: {reason}"
             active_tasks[task_id]["output"] = output
             
+            # Save task log
+            save_task_log(task_id, "system_selfupdate_rejected", f"Self-update rejected: {reason}")
+            
             # Notify the LLM about the rejection
             prompt = f"""Self-update was rejected: {reason}
 Please continue with the goal using standard code blocks instead of self-update.
 """
-            save_message(task_id, "in", prompt)
-            history = get_conversation_history(task_id)
-            iterate_next_step(goal, task_id, prompt, history)
+            iterate_next_step(goal, task_id, prompt)
             return
         
         # Apply the self-update
         try:
-            (WORKDIR/"agent.py").write_text(new_code)
-            log("Self-updated code. Restarting…")
-            output += "\n🔄 Agent self-updated. Restarting..."
+            backup_path = WORKDIR / f"agent.py.bak.{int(time.time())}"
+            # Backup current file
+            if (WORKDIR / "agent.py").exists():
+                with open(WORKDIR / "agent.py", 'r', encoding='utf-8') as src:
+                    with open(backup_path, 'w', encoding='utf-8') as dst:
+                        dst.write(src.read())
+            
+            # Write new code
+            with open(WORKDIR / "agent.py", 'w', encoding='utf-8') as f:
+                f.write(new_code)
+                
+            log(f"Self-updated code. Backed up to {backup_path}. Restarting…")
+            output += f"\n🔄 Agent self-updated. Backup saved to {backup_path}. Restarting..."
             active_tasks[task_id]["status"] = "restarting"
             active_tasks[task_id]["output"] = output
+            
+            # Save task log
+            save_task_log(task_id, "system_selfupdate", f"Self-update applied. Backup saved to {backup_path}")
             
             # Notify websockets before restart
             asyncio.run(notify_websockets({
@@ -1086,19 +1228,20 @@ Please continue with the goal using standard code blocks instead of self-update.
                        int(time.time() - active_tasks[task_id].get("start_time", time.time())))
             
             # Restart the agent
-            os.execv(sys.executable, [sys.executable, "agent.py"])
+            os.execv(sys.executable, [sys.executable, str(WORKDIR / "agent.py")])
         except Exception as e:
             log(f"Error during self-update: {e}")
             output += f"\n❌ Self-update failed: {str(e)}"
             active_tasks[task_id]["output"] = output
             
+            # Save task log
+            save_task_log(task_id, "system_selfupdate_failed", f"Self-update failed: {str(e)}")
+            
             # Notify the LLM about the failure
             prompt = f"""Self-update failed: {str(e)}
 Please continue with the goal using standard code blocks instead of self-update.
 """
-            save_message(task_id, "in", prompt)
-            history = get_conversation_history(task_id)
-            iterate_next_step(goal, task_id, prompt, history)
+            iterate_next_step(goal, task_id, prompt)
             return
     
     # Extract and execute functions
@@ -1144,10 +1287,14 @@ Please continue with the goal using standard code blocks instead of self-update.
 {chr(10).join(func_results)}
 
 Continue with the goal: {goal}
+
+You can:
+1. Execute code with #SH or #PY blocks
+2. Check files with #CALL read_file(path)
+3. List directory contents with #CALL list_directory(path)
+4. Finish with #DONE when complete
 """
-        save_message(task_id, "in", prompt)
-        history = get_conversation_history(task_id)
-        iterate_next_step(goal, task_id, prompt, history)
+        iterate_next_step(goal, task_id, prompt)
         return
     
     # Extract code blocks
@@ -1157,6 +1304,9 @@ Continue with the goal: {goal}
         output += "\n❌ No executable code detected. Aborting."
         active_tasks[task_id]["status"] = "failed"
         active_tasks[task_id]["output"] = output
+        
+        # Save task log
+        save_task_log(task_id, "system_task_failed", "No executable code detected")
         
         # Notify websockets
         asyncio.run(notify_websockets({
@@ -1177,15 +1327,22 @@ Continue with the goal: {goal}
         output += f"\n❌ Code validation failed: {reason}"
         active_tasks[task_id]["output"] = output
         
+        # Save task log
+        save_task_log(task_id, "system_code_validation_failed", f"Code validation failed: {reason}\n\nCode: {code}")
+        
         # Notify the LLM about the validation failure
         prompt = f"""Code validation failed: {reason}
 Please revise your approach and provide a safer solution.
 
 Goal: {goal}
+
+You can:
+1. Execute code with #SH or #PY blocks
+2. Check files with #CALL read_file(path)
+3. List directory contents with #CALL list_directory(path)
+4. Finish with #DONE when complete
 """
-        save_message(task_id, "in", prompt)
-        history = get_conversation_history(task_id)
-        iterate_next_step(goal, task_id, prompt, history)
+        iterate_next_step(goal, task_id, prompt)
         return
     
     # Execute the code
@@ -1204,10 +1361,16 @@ Goal: {goal}
         "step": iteration
     }))
     
+    # Save code execution log
+    save_task_log(task_id, "system_shell_execution", f"Step {iteration} ({kind}):\n\n{code}")
+    
     # Execute code
     out = run_py(code) if kind == "PY" else run_sh(code)
     output += out
     active_tasks[task_id]["output"] = output
+    
+    # Save execution output log
+    save_task_log(task_id, "system_shell_output", f"Step {iteration} output:\n\n{out}")
     
     # Update environment context
     env_context = get_environment_context()
@@ -1223,6 +1386,7 @@ Current environment:
 - Root privileges: {env_context['is_root']}
 - Working directory: {env_context['working_dir']}
 - Available commands: {', '.join(env_context['available_commands'].split()) if env_context['available_commands'] else "unknown"}
+{f"- Docker: {env_context['docker_status']} ({env_context['docker_running']})" if 'docker_running' in env_context else f"- Docker: {env_context.get('docker_status', 'unknown')}"}
 
 Continue with the goal: {goal}
 
@@ -1230,17 +1394,20 @@ You can:
 1. Execute another step with #SH or #PY
 2. Read full output with #CALL read_file(path)
 3. Wait with #CALL wait(seconds)
-4. Finish with #DONE when complete
+4. List directory contents with #CALL list_directory(path)
+5. Finish with #DONE when complete
 """
     
-    save_message(task_id, "in", next_prompt)
-    history = get_conversation_history(task_id)
-    iterate_next_step(goal, task_id, next_prompt, history)
+    iterate_next_step(goal, task_id, next_prompt)
 
 def iterate(goal: str, task_id=None):
     """Run the AI goal iteration loop with improved environment awareness"""
+    # Generate sequential task ID if none provided
     if not task_id:
-        task_id = str(uuid.uuid4())
+        task_id = get_next_task_id()
+    
+    # Register task in database
+    register_task(task_id, goal)
     
     start_time = time.time()
     active_tasks[task_id] = {
@@ -1250,6 +1417,9 @@ def iterate(goal: str, task_id=None):
         "step": 0,
         "start_time": start_time
     }
+    
+    # Log task start
+    save_task_log(task_id, "user_to_system", goal)
     
     try:
         # Get environment context
@@ -1264,6 +1434,7 @@ Current environment:
 - OS: {env_context['os_info']}
 - Working directory: {env_context['working_dir']}
 - Available commands: {', '.join(env_context['available_commands'].split()) if env_context['available_commands'] else "unknown"}
+{f"- Docker: {env_context['docker_status']} ({env_context['docker_running']})" if 'docker_running' in env_context else f"- Docker: {env_context.get('docker_status', 'unknown')}"}
 
 IMPORTANT INSTRUCTIONS:
 1. If running as root, DO NOT use sudo - it's unnecessary and may not be installed
@@ -1272,7 +1443,7 @@ IMPORTANT INSTRUCTIONS:
 4. You can call functions:
    - #CALL read_file(path) - Read file content
    - #CALL wait(seconds) - Wait before continuing
-   - #CALL check_status(task_id) - Check status of a task
+   - #CALL list_directory(path) - List directory contents
 5. Return #DONE when the goal is completed
 
 Goal: {goal}
@@ -1283,11 +1454,10 @@ Then proceed with implementing the solution step by step.
 """
         
         # Save the prompt and get initial response
-        save_message(task_id, "in", system_prompt)
-        response = ollama_chat(system_prompt)
-        save_message(task_id, "out", response)
+        response = ollama_chat(system_prompt, task_id)
         
         # Store response in active tasks
+        active_tasks[task_id]["output"] = response
         active_tasks[task_id]["last_response"] = response
         
         # Process the response in a separate thread
@@ -1304,6 +1474,9 @@ Then proceed with implementing the solution step by step.
         log(f"Error starting task: {e}")
         active_tasks[task_id]["status"] = "failed"
         active_tasks[task_id]["output"] = f"❌ Error: {str(e)}"
+        
+        # Log error
+        save_task_log(task_id, "system_error", f"Error starting task: {str(e)}")
         
         save_history(goal, "failed", f"❌ Error: {str(e)}", 
                    int(time.time() - start_time))
@@ -1359,8 +1532,7 @@ ws_connections = set()
 # API endpoints
 @app.post("/api/goal")
 async def api_goal(g: Goal):
-    task_id = str(uuid.uuid4())
-    result = iterate(g.text, task_id)
+    result = iterate(g.text)
     return result
 
 @app.get("/api/task/{task_id}")
@@ -1381,6 +1553,33 @@ async def get_task_history(limit: int = 50):
 @app.get("/api/logs")
 async def get_logs(limit: int = 100):
     return get_recent_logs(limit)
+
+@app.get("/api/task_logs/{task_id}")
+async def get_task_logs_endpoint(task_id: str):
+    logs = get_task_logs(task_id)
+    return {
+        "task_id": task_id,
+        "logs": logs
+    }
+
+@app.get("/api/task_log_content/{task_id}/{filename}")
+async def get_task_log_content(task_id: str, filename: str):
+    log_path = LOGS_DIR / task_id / filename
+    
+    if not log_path.exists():
+        return {"error": "Log file not found"}
+    
+    content = read_file(log_path)
+    return {"content": content}
+
+@app.get("/logs/{task_id}/{filename}")
+async def get_log_file(task_id: str, filename: str):
+    log_path = LOGS_DIR / task_id / filename
+    
+    if not log_path.exists():
+        return HTMLResponse(content="Log file not found", status_code=404)
+    
+    return FileResponse(log_path)
 
 @app.get("/api/status")
 async def get_status():
@@ -1479,11 +1678,15 @@ async def history_page(request: Request):
 async def task_page(request: Request, task_id: str):
     return templates.TemplateResponse("task.html", {"request": request, "task_id": task_id})
 
+@app.get("/task_logs/{task_id}", response_class=HTMLResponse)
+async def task_logs_page(request: Request, task_id: str):
+    logs = get_task_logs(task_id)
+    return templates.TemplateResponse("task_logs.html", {"request": request, "task_id": task_id, "logs": logs})
+
 @app.post("/submit")
 async def submit_goal(goal: str = Form(...)):
-    task_id = str(uuid.uuid4())
-    iterate(goal, task_id)
-    return RedirectResponse(url=f"/task/{task_id}", status_code=303)
+    result = iterate(goal)
+    return RedirectResponse(url=f"/task/{result['id']}", status_code=303)
 
 # CLI interface
 def cli():
@@ -1513,9 +1716,9 @@ def start_ollama():
     local_bin = WORKDIR / "bin" / "ollama"
     if local_bin.exists() and os.access(local_bin, os.X_OK):
         log(f"Starting Ollama from local binary: {local_bin}")
-        LOG_DIR.mkdir(exist_ok=True)
+        LOGS_DIR.mkdir(exist_ok=True)
         subprocess.Popen([str(local_bin), "serve"],
-                        stdout=open(LOG_DIR/"ollama_agent.log", "w"),
+                        stdout=open(LOGS_DIR/"ollama_agent.log", "w"),
                         stderr=subprocess.STDOUT)
         time.sleep(5)
         return check_ollama()
@@ -1523,9 +1726,9 @@ def start_ollama():
     # Try system binary
     try:
         log("Starting Ollama from system path...")
-        LOG_DIR.mkdir(exist_ok=True)
+        LOGS_DIR.mkdir(exist_ok=True)
         subprocess.Popen(["ollama", "serve"],
-                        stdout=open(LOG_DIR/"ollama_agent.log", "w"),
+                        stdout=open(LOGS_DIR/"ollama_agent.log", "w"),
                         stderr=subprocess.STDOUT)
         time.sleep(5)
         return check_ollama()
@@ -2421,6 +2624,246 @@ cat > "$WORKDIR/ui/templates/logs.html" <<'HTML'
 HTML
 
 
+# task_logs.html template
+cat > "$WORKDIR/ui/templates/task_logs.html" <<'HTML'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Infinite AI - Task Logs</title>
+    <link rel="stylesheet" href="/static/css/bootstrap.min.css">
+    <link rel="stylesheet" href="/static/css/styles.css">
+    <style>
+        .log-list {
+            max-height: 300px;
+            overflow-y: auto;
+            border: 1px solid #dee2e6;
+            border-radius: 0.25rem;
+            padding: 0.5rem;
+            margin-bottom: 1rem;
+        }
+        .log-card {
+            margin-bottom: 0.5rem;
+            cursor: pointer;
+        }
+        .log-card:hover {
+            background-color: #f8f9fa;
+        }
+        .log-content {
+            border: 1px solid #dee2e6;
+            border-radius: 0.25rem;
+            padding: 1rem;
+            min-height: 400px;
+            max-height: 600px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            font-family: monospace;
+            background-color: #f8f9fa;
+        }
+        .badge-system-to-llm { background-color: #6c757d; }
+        .badge-llm-to-system { background-color: #28a745; }
+        .badge-system-shell-execution { background-color: #dc3545; }
+        .badge-system-shell-output { background-color: #fd7e14; }
+        .badge-user-to-system { background-color: #007bff; }
+        .badge-system-function-execution { background-color: #6610f2; }
+        .badge-system-task-complete { background-color: #20c997; }
+        .badge-system-error { background-color: #dc3545; }
+        .badge-system-selfupdate { background-color: #17a2b8; }
+        
+        .timeline {
+            position: relative;
+            padding-left: 30px;
+        }
+        .timeline:before {
+            content: '';
+            position: absolute;
+            left: 10px;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: #ddd;
+        }
+        .timeline-item {
+            position: relative;
+            margin-bottom: 20px;
+        }
+        .timeline-item:before {
+            content: '';
+            position: absolute;
+            left: -25px;
+            top: 0;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #007bff;
+        }
+        .timeline-item-user:before { background: #007bff; }
+        .timeline-item-llm:before { background: #28a745; }
+        .timeline-item-shell:before { background: #dc3545; }
+        .timeline-item-func:before { background: #6610f2; }
+        .timeline-item-complete:before { background: #20c997; }
+        .timeline-content {
+            padding: 10px;
+            border-radius: 5px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            background: #fff;
+        }
+        .timeline-header {
+            display: flex;
+            justify-content: space-between;
+            padding-bottom: 5px;
+            border-bottom: 1px solid #eee;
+            margin-bottom: 10px;
+        }
+        .flex-container {
+            display: flex;
+            gap: 20px;
+        }
+        .sidebar {
+            flex: 0 0 350px;
+            height: calc(100vh - 120px);
+            overflow-y: auto;
+        }
+        .main-content {
+            flex: 1;
+            height: calc(100vh - 120px);
+            overflow-y: auto;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container">
+            <a class="navbar-brand" href="/">Infinite AI Agent</a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav">
+                    <li class="nav-item">
+                        <a class="nav-link" href="/">Home</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/logs">System Logs</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/history">Task History</a>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container-fluid mt-4">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h1>Task {{ task_id }} Logs</h1>
+            <div>
+                <a href="/task/{{ task_id }}" class="btn btn-primary">View Task</a>
+                <a href="/history" class="btn btn-secondary">Task History</a>
+            </div>
+        </div>
+
+        <div class="flex-container">
+            <div class="sidebar">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">Log Files</h5>
+                        <button class="btn btn-sm btn-secondary" id="refreshLogs">Refresh</button>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="timeline p-3" id="logFiles">
+                            {% for log in logs %}
+                                {% set log_type_class = "timeline-item-" + log.type.split("_")[0] %}
+                                {% if "llm" in log.type %}
+                                    {% set log_type_class = "timeline-item-llm" %}
+                                {% elif "shell" in log.type %}
+                                    {% set log_type_class = "timeline-item-shell" %}
+                                {% elif "function" in log.type %}
+                                    {% set log_type_class = "timeline-item-func" %}
+                                {% elif "complete" in log.type %}
+                                    {% set log_type_class = "timeline-item-complete" %}
+                                {% endif %}
+                                
+                                <div class="timeline-item {{ log_type_class }}" data-log-path="{{ log.path }}">
+                                    <div class="timeline-content">
+                                        <div class="timeline-header">
+                                            <span class="badge badge-{{ log.type }}">{{ log.type.replace("_", " ").title() }}</span>
+                                            <small class="text-muted">{{ log.timestamp }}</small>
+                                        </div>
+                                        <span class="log-item-name">{{ log.filename }}</span>
+                                    </div>
+                                </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="main-content">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0">Log Content</h5>
+                        <span id="currentLogPath" class="text-muted small"></span>
+                    </div>
+                    <div class="card-body">
+                        <div class="log-content" id="logContent">
+                            <div class="text-center text-muted">
+                                <p>Select a log file from the list to view its content</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/bootstrap.bundle.min.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const logFiles = document.getElementById('logFiles');
+            const logContent = document.getElementById('logContent');
+            const currentLogPath = document.getElementById('currentLogPath');
+            const refreshLogsBtn = document.getElementById('refreshLogs');
+            
+            // Handle log file selection
+            logFiles.addEventListener('click', function(e) {
+                // Find closest log item
+                const logItem = e.target.closest('.timeline-item');
+                if (!logItem) return;
+                
+                // Highlight selected log
+                document.querySelectorAll('.timeline-item').forEach(item => {
+                    item.classList.remove('active', 'bg-light');
+                });
+                logItem.classList.add('active', 'bg-light');
+                
+                // Get log path and fetch content
+                const logPath = logItem.dataset.logPath;
+                if (!logPath) return;
+                
+                fetch(`/logs/${logPath.split('/').slice(-2).join('/')}`)
+                    .then(response => response.text())
+                    .then(content => {
+                        logContent.innerHTML = content;
+                        currentLogPath.textContent = logPath.split('/').pop();
+                    })
+                    .catch(error => {
+                        logContent.innerHTML = `<div class="alert alert-danger">Error loading log: ${error}</div>`;
+                    });
+            });
+            
+            // Refresh logs
+            refreshLogsBtn.addEventListener('click', function() {
+                location.reload();
+            });
+        });
+    </script>
+</body>
+</html>
+HTML
+
+
 # task.html template
 cat > "$WORKDIR/ui/templates/task.html" <<'HTML'
 <!DOCTYPE html>
@@ -2428,49 +2871,314 @@ cat > "$WORKDIR/ui/templates/task.html" <<'HTML'
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Task Details - Infinite AI Agent</title>
-    <link rel="stylesheet" href="/static/styles.css">
+    <title>Infinite AI - Task Details</title>
+    <link rel="stylesheet" href="/static/css/bootstrap.min.css">
+    <link rel="stylesheet" href="/static/css/styles.css">
+    <style>
+        .terminal {
+            background-color: #000;
+            color: #00ff00;
+            font-family: monospace;
+            padding: 1rem;
+            border-radius: 5px;
+            white-space: pre-wrap;
+            overflow-y: auto;
+            height: 550px;
+        }
+        #output {
+            margin: 0;
+            padding: 0;
+        }
+        .task-info {
+            font-size: 1.2em;
+            margin-bottom: 20px;
+        }
+        .task-status {
+            font-weight: bold;
+            margin-left: 10px;
+        }
+        .status-running {
+            color: #007bff;
+        }
+        .status-completed {
+            color: #28a745;
+        }
+        .status-failed {
+            color: #dc3545;
+        }
+        .info-panel {
+            background-color: #f8f9fa;
+            border-radius: 5px;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+        .log-nav-btn {
+            margin-right: 15px;
+        }
+    </style>
 </head>
 <body>
-    <div class="container">
-        <header>
-            <div class="logo">
-                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M12 8V4m0 8v-4m0 8v-4m0 8v-4M4 6h16M4 10h16M4 14h16M4 18h16"></path>
-                </svg>
-                <span>Infinite AI Agent</span>
-            </div>
-            <nav>
-                <ul>
-                    <li><a href="/">Home</a></li>
-                    <li><a href="/history">History</a></li>
-                    <li><a href="/logs">Logs</a></li>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container">
+            <a class="navbar-brand" href="/">Infinite AI Agent</a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav">
+                    <li class="nav-item">
+                        <a class="nav-link" href="/">Home</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/logs">System Logs</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/history">Task History</a>
+                    </li>
                 </ul>
-            </nav>
-        </header>
-        
-        <input type="hidden" id="task-id" value="{{ task_id }}">
-        
-        <div class="card">
-            <div class="card-header">
-                <div>
-                    <h2 class="card-title">Task Details</h2>
-                    <div id="task-goal" style="margin-top: 5px;">Loading...</div>
-                </div>
-                <div>
-                    Status: <span id="task-status" class="status status-loading">Loading...</span>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container-fluid mt-4">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <h1>Task Details</h1>
+            <div>
+                <a href="/task_logs/{{ task_id }}" class="btn btn-info log-nav-btn">
+                    <i class="fas fa-file-alt"></i> View Detailed Logs
+                </a>
+                <a href="/" class="btn btn-secondary">Back to Home</a>
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="col-lg-3">
+                <div class="info-panel">
+                    <h4>Task Information</h4>
+                    <div class="task-info">
+                        <div>
+                            <strong>ID:</strong> <span id="taskId">{{ task_id }}</span>
+                        </div>
+                        <div>
+                            <strong>Goal:</strong> <span id="taskGoal">Loading...</span>
+                        </div>
+                        <div>
+                            <strong>Status:</strong> 
+                            <span id="taskStatus" class="task-status">Loading...</span>
+                        </div>
+                        <div>
+                            <strong>Created:</strong> <span id="taskCreated">Loading...</span>
+                        </div>
+                        <div>
+                            <strong>Duration:</strong> <span id="taskDuration">Loading...</span>
+                        </div>
+                        <div>
+                            <strong>Current Step:</strong> <span id="taskStep">Loading...</span>
+                        </div>
+                    </div>
+
+                    <h4>Environment</h4>
+                    <div id="environment" class="mb-3">
+                        <div>Loading environment info...</div>
+                    </div>
+
+                    <div class="d-grid gap-2">
+                        <button class="btn btn-warning" id="cancelBtn" disabled>Cancel Task</button>
+                        <button class="btn btn-primary" id="refreshBtn">Refresh Status</button>
+                    </div>
                 </div>
             </div>
-            <div class="output-code" id="task-output">
-                Loading task details...
-            </div>
-            <div style="margin-top: 15px;">
-                <a href="/" class="button button-secondary">Back to Home</a>
+            <div class="col-lg-9">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">Task Output</h5>
+                        <div>
+                            <button class="btn btn-sm btn-secondary" id="clearBtn">Clear</button>
+                            <button class="btn btn-sm btn-secondary" id="copyBtn">Copy</button>
+                        </div>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="terminal">
+                            <pre id="output">Loading task output...</pre>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
-    
-    <script src="/static/app.js"></script>
+
+    <script src="/static/js/bootstrap.bundle.min.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const taskId = document.getElementById('taskId').textContent;
+            const taskGoal = document.getElementById('taskGoal');
+            const taskStatus = document.getElementById('taskStatus');
+            const taskCreated = document.getElementById('taskCreated');
+            const taskDuration = document.getElementById('taskDuration');
+            const taskStep = document.getElementById('taskStep');
+            const output = document.getElementById('output');
+            const environment = document.getElementById('environment');
+            const refreshBtn = document.getElementById('refreshBtn');
+            const cancelBtn = document.getElementById('cancelBtn');
+            const clearBtn = document.getElementById('clearBtn');
+            const copyBtn = document.getElementById('copyBtn');
+            
+            let ws = null;
+            let isCompleted = false;
+
+            // Initialize WebSocket connection
+            function initWebSocket() {
+                ws = new WebSocket(`ws://${window.location.host}/ws`);
+                
+                ws.onopen = function() {
+                    console.log('WebSocket connected');
+                };
+                
+                ws.onmessage = function(event) {
+                    const data = JSON.parse(event.data);
+                    
+                    if (data.type === 'task_update' && data.id === taskId) {
+                        updateTaskInfo(data);
+                    } else if (data.type === 'task_complete' && data.id === taskId) {
+                        updateTaskInfo(data);
+                        isCompleted = true;
+                        cancelBtn.disabled = true;
+                        
+                        // Update UI to show completed status
+                        taskStatus.textContent = data.status;
+                        taskStatus.className = 'task-status status-' + data.status.toLowerCase();
+                        
+                        // Show duration if available
+                        if (data.duration) {
+                            const minutes = Math.floor(data.duration / 60);
+                            const seconds = data.duration % 60;
+                            taskDuration.textContent = `${minutes}m ${seconds}s`;
+                        }
+                    }
+                };
+                
+                ws.onclose = function() {
+                    console.log('WebSocket disconnected');
+                    // Try to reconnect after a delay if the task is not completed
+                    if (!isCompleted) {
+                        setTimeout(initWebSocket, 5000);
+                    }
+                };
+                
+                ws.onerror = function(error) {
+                    console.error('WebSocket error:', error);
+                };
+            }
+            
+            // Update task information from the server data
+            function updateTaskInfo(data) {
+                taskStatus.textContent = data.status;
+                taskStatus.className = 'task-status status-' + (data.status.includes('failed') ? 'failed' : 
+                                                              data.status.includes('completed') ? 'completed' : 'running');
+                
+                if (data.goal) {
+                    taskGoal.textContent = data.goal;
+                }
+                
+                if (data.created) {
+                    const date = new Date(data.created);
+                    taskCreated.textContent = date.toLocaleString();
+                }
+                
+                if (data.step !== undefined) {
+                    taskStep.textContent = data.step;
+                }
+                
+                if (data.output) {
+                    output.textContent = data.output;
+                    output.parentElement.scrollTop = output.parentElement.scrollHeight;
+                }
+                
+                // Enable cancel button if task is running
+                cancelBtn.disabled = data.status.includes('completed') || 
+                                      data.status.includes('failed') || 
+                                      data.status.includes('restarting');
+            }
+            
+            // Load task information from the API
+            function loadTaskInfo() {
+                fetch(`/api/task/${taskId}`)
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.error) {
+                            output.textContent = `Error: ${data.error}`;
+                            return;
+                        }
+                        
+                        updateTaskInfo(data);
+                        
+                        // Check if task is already completed
+                        isCompleted = data.status === 'completed' || 
+                                     data.status === 'failed' || 
+                                     data.status === 'restarting';
+                        
+                        // Set environment info if available
+                        if (data.environment) {
+                            const envHtml = [];
+                            for (const [key, value] of Object.entries(data.environment)) {
+                                envHtml.push(`<div><strong>${key}:</strong> ${value}</div>`);
+                            }
+                            environment.innerHTML = envHtml.join('');
+                        } else {
+                            environment.innerHTML = '<div>No environment information available</div>';
+                        }
+                    })
+                    .catch(error => {
+                        output.textContent = `Error loading task: ${error}`;
+                    });
+            }
+            
+            // Initialize the page
+            loadTaskInfo();
+            initWebSocket();
+            
+            // Set up event listeners
+            refreshBtn.addEventListener('click', loadTaskInfo);
+            
+            cancelBtn.addEventListener('click', function() {
+                if (confirm('Are you sure you want to cancel this task?')) {
+                    fetch(`/api/task/${taskId}/cancel`, { method: 'POST' })
+                        .then(response => response.json())
+                        .then(data => {
+                            if (data.success) {
+                                alert('Task cancelled successfully');
+                                loadTaskInfo();
+                            } else {
+                                alert(`Failed to cancel task: ${data.error}`);
+                            }
+                        })
+                        .catch(error => {
+                            alert(`Error: ${error}`);
+                        });
+                }
+            });
+            
+            clearBtn.addEventListener('click', function() {
+                output.textContent = '';
+            });
+            
+            copyBtn.addEventListener('click', function() {
+                const textarea = document.createElement('textarea');
+                textarea.value = output.textContent;
+                document.body.appendChild(textarea);
+                textarea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textarea);
+                
+                // Show a temporary confirmation
+                const originalText = copyBtn.textContent;
+                copyBtn.textContent = 'Copied!';
+                setTimeout(() => {
+                    copyBtn.textContent = originalText;
+                }, 2000);
+            });
+        });
+    </script>
 </body>
 </html>
 HTML

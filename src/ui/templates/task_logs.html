@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Infinite AI - Task Logs</title>
+    <link rel="stylesheet" href="/static/css/bootstrap.min.css">
+    <link rel="stylesheet" href="/static/css/styles.css">
+    <style>
+        .log-list {
+            max-height: 300px;
+            overflow-y: auto;
+            border: 1px solid #dee2e6;
+            border-radius: 0.25rem;
+            padding: 0.5rem;
+            margin-bottom: 1rem;
+        }
+        .log-card {
+            margin-bottom: 0.5rem;
+            cursor: pointer;
+        }
+        .log-card:hover {
+            background-color: #f8f9fa;
+        }
+        .log-content {
+            border: 1px solid #dee2e6;
+            border-radius: 0.25rem;
+            padding: 1rem;
+            min-height: 400px;
+            max-height: 600px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            font-family: monospace;
+            background-color: #f8f9fa;
+        }
+        .badge-system-to-llm { background-color: #6c757d; }
+        .badge-llm-to-system { background-color: #28a745; }
+        .badge-system-shell-execution { background-color: #dc3545; }
+        .badge-system-shell-output { background-color: #fd7e14; }
+        .badge-user-to-system { background-color: #007bff; }
+        .badge-system-function-execution { background-color: #6610f2; }
+        .badge-system-task-complete { background-color: #20c997; }
+        .badge-system-error { background-color: #dc3545; }
+        .badge-system-selfupdate { background-color: #17a2b8; }
+        
+        .timeline {
+            position: relative;
+            padding-left: 30px;
+        }
+        .timeline:before {
+            content: '';
+            position: absolute;
+            left: 10px;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: #ddd;
+        }
+        .timeline-item {
+            position: relative;
+            margin-bottom: 20px;
+        }
+        .timeline-item:before {
+            content: '';
+            position: absolute;
+            left: -25px;
+            top: 0;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #007bff;
+        }
+        .timeline-item-user:before { background: #007bff; }
+        .timeline-item-llm:before { background: #28a745; }
+        .timeline-item-shell:before { background: #dc3545; }
+        .timeline-item-func:before { background: #6610f2; }
+        .timeline-item-complete:before { background: #20c997; }
+        .timeline-content {
+            padding: 10px;
+            border-radius: 5px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            background: #fff;
+        }
+        .timeline-header {
+            display: flex;
+            justify-content: space-between;
+            padding-bottom: 5px;
+            border-bottom: 1px solid #eee;
+            margin-bottom: 10px;
+        }
+        .flex-container {
+            display: flex;
+            gap: 20px;
+        }
+        .sidebar {
+            flex: 0 0 350px;
+            height: calc(100vh - 120px);
+            overflow-y: auto;
+        }
+        .main-content {
+            flex: 1;
+            height: calc(100vh - 120px);
+            overflow-y: auto;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container">
+            <a class="navbar-brand" href="/">Infinite AI Agent</a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav">
+                    <li class="nav-item">
+                        <a class="nav-link" href="/">Home</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/logs">System Logs</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/history">Task History</a>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container-fluid mt-4">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h1>Task {{ task_id }} Logs</h1>
+            <div>
+                <a href="/task/{{ task_id }}" class="btn btn-primary">View Task</a>
+                <a href="/history" class="btn btn-secondary">Task History</a>
+            </div>
+        </div>
+
+        <div class="flex-container">
+            <div class="sidebar">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">Log Files</h5>
+                        <button class="btn btn-sm btn-secondary" id="refreshLogs">Refresh</button>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="timeline p-3" id="logFiles">
+                            {% for log in logs %}
+                                {% set log_type_class = "timeline-item-" + log.type.split("_")[0] %}
+                                {% if "llm" in log.type %}
+                                    {% set log_type_class = "timeline-item-llm" %}
+                                {% elif "shell" in log.type %}
+                                    {% set log_type_class = "timeline-item-shell" %}
+                                {% elif "function" in log.type %}
+                                    {% set log_type_class = "timeline-item-func" %}
+                                {% elif "complete" in log.type %}
+                                    {% set log_type_class = "timeline-item-complete" %}
+                                {% endif %}
+                                
+                                <div class="timeline-item {{ log_type_class }}" data-log-path="{{ log.path }}">
+                                    <div class="timeline-content">
+                                        <div class="timeline-header">
+                                            <span class="badge badge-{{ log.type }}">{{ log.type.replace("_", " ").title() }}</span>
+                                            <small class="text-muted">{{ log.timestamp }}</small>
+                                        </div>
+                                        <span class="log-item-name">{{ log.filename }}</span>
+                                    </div>
+                                </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="main-content">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0">Log Content</h5>
+                        <span id="currentLogPath" class="text-muted small"></span>
+                    </div>
+                    <div class="card-body">
+                        <div class="log-content" id="logContent">
+                            <div class="text-center text-muted">
+                                <p>Select a log file from the list to view its content</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/bootstrap.bundle.min.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const logFiles = document.getElementById('logFiles');
+            const logContent = document.getElementById('logContent');
+            const currentLogPath = document.getElementById('currentLogPath');
+            const refreshLogsBtn = document.getElementById('refreshLogs');
+            
+            // Handle log file selection
+            logFiles.addEventListener('click', function(e) {
+                // Find closest log item
+                const logItem = e.target.closest('.timeline-item');
+                if (!logItem) return;
+                
+                // Highlight selected log
+                document.querySelectorAll('.timeline-item').forEach(item => {
+                    item.classList.remove('active', 'bg-light');
+                });
+                logItem.classList.add('active', 'bg-light');
+                
+                // Get log path and fetch content
+                const logPath = logItem.dataset.logPath;
+                if (!logPath) return;
+                
+                fetch(`/logs/${logPath.split('/').slice(-2).join('/')}`)
+                    .then(response => response.text())
+                    .then(content => {
+                        logContent.innerHTML = content;
+                        currentLogPath.textContent = logPath.split('/').pop();
+                    })
+                    .catch(error => {
+                        logContent.innerHTML = `<div class="alert alert-danger">Error loading log: ${error}</div>`;
+                    });
+            });
+            
+            // Refresh logs
+            refreshLogsBtn.addEventListener('click', function() {
+                location.reload();
+            });
+        });
+    </script>
+</body>
+</html>

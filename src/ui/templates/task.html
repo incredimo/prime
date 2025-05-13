@@ -3,48 +3,313 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Task Details - Infinite AI Agent</title>
-    <link rel="stylesheet" href="/static/styles.css">
+    <title>Infinite AI - Task Details</title>
+    <link rel="stylesheet" href="/static/css/bootstrap.min.css">
+    <link rel="stylesheet" href="/static/css/styles.css">
+    <style>
+        .terminal {
+            background-color: #000;
+            color: #00ff00;
+            font-family: monospace;
+            padding: 1rem;
+            border-radius: 5px;
+            white-space: pre-wrap;
+            overflow-y: auto;
+            height: 550px;
+        }
+        #output {
+            margin: 0;
+            padding: 0;
+        }
+        .task-info {
+            font-size: 1.2em;
+            margin-bottom: 20px;
+        }
+        .task-status {
+            font-weight: bold;
+            margin-left: 10px;
+        }
+        .status-running {
+            color: #007bff;
+        }
+        .status-completed {
+            color: #28a745;
+        }
+        .status-failed {
+            color: #dc3545;
+        }
+        .info-panel {
+            background-color: #f8f9fa;
+            border-radius: 5px;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+        .log-nav-btn {
+            margin-right: 15px;
+        }
+    </style>
 </head>
 <body>
-    <div class="container">
-        <header>
-            <div class="logo">
-                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M12 8V4m0 8v-4m0 8v-4m0 8v-4M4 6h16M4 10h16M4 14h16M4 18h16"></path>
-                </svg>
-                <span>Infinite AI Agent</span>
-            </div>
-            <nav>
-                <ul>
-                    <li><a href="/">Home</a></li>
-                    <li><a href="/history">History</a></li>
-                    <li><a href="/logs">Logs</a></li>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container">
+            <a class="navbar-brand" href="/">Infinite AI Agent</a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav">
+                    <li class="nav-item">
+                        <a class="nav-link" href="/">Home</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/logs">System Logs</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/history">Task History</a>
+                    </li>
                 </ul>
-            </nav>
-        </header>
-        
-        <input type="hidden" id="task-id" value="{{ task_id }}">
-        
-        <div class="card">
-            <div class="card-header">
-                <div>
-                    <h2 class="card-title">Task Details</h2>
-                    <div id="task-goal" style="margin-top: 5px;">Loading...</div>
-                </div>
-                <div>
-                    Status: <span id="task-status" class="status status-loading">Loading...</span>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container-fluid mt-4">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <h1>Task Details</h1>
+            <div>
+                <a href="/task_logs/{{ task_id }}" class="btn btn-info log-nav-btn">
+                    <i class="fas fa-file-alt"></i> View Detailed Logs
+                </a>
+                <a href="/" class="btn btn-secondary">Back to Home</a>
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="col-lg-3">
+                <div class="info-panel">
+                    <h4>Task Information</h4>
+                    <div class="task-info">
+                        <div>
+                            <strong>ID:</strong> <span id="taskId">{{ task_id }}</span>
+                        </div>
+                        <div>
+                            <strong>Goal:</strong> <span id="taskGoal">Loading...</span>
+                        </div>
+                        <div>
+                            <strong>Status:</strong> 
+                            <span id="taskStatus" class="task-status">Loading...</span>
+                        </div>
+                        <div>
+                            <strong>Created:</strong> <span id="taskCreated">Loading...</span>
+                        </div>
+                        <div>
+                            <strong>Duration:</strong> <span id="taskDuration">Loading...</span>
+                        </div>
+                        <div>
+                            <strong>Current Step:</strong> <span id="taskStep">Loading...</span>
+                        </div>
+                    </div>
+
+                    <h4>Environment</h4>
+                    <div id="environment" class="mb-3">
+                        <div>Loading environment info...</div>
+                    </div>
+
+                    <div class="d-grid gap-2">
+                        <button class="btn btn-warning" id="cancelBtn" disabled>Cancel Task</button>
+                        <button class="btn btn-primary" id="refreshBtn">Refresh Status</button>
+                    </div>
                 </div>
             </div>
-            <div class="output-code" id="task-output">
-                Loading task details...
-            </div>
-            <div style="margin-top: 15px;">
-                <a href="/" class="button button-secondary">Back to Home</a>
+            <div class="col-lg-9">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">Task Output</h5>
+                        <div>
+                            <button class="btn btn-sm btn-secondary" id="clearBtn">Clear</button>
+                            <button class="btn btn-sm btn-secondary" id="copyBtn">Copy</button>
+                        </div>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="terminal">
+                            <pre id="output">Loading task output...</pre>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
-    
-    <script src="/static/app.js"></script>
+
+    <script src="/static/js/bootstrap.bundle.min.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const taskId = document.getElementById('taskId').textContent;
+            const taskGoal = document.getElementById('taskGoal');
+            const taskStatus = document.getElementById('taskStatus');
+            const taskCreated = document.getElementById('taskCreated');
+            const taskDuration = document.getElementById('taskDuration');
+            const taskStep = document.getElementById('taskStep');
+            const output = document.getElementById('output');
+            const environment = document.getElementById('environment');
+            const refreshBtn = document.getElementById('refreshBtn');
+            const cancelBtn = document.getElementById('cancelBtn');
+            const clearBtn = document.getElementById('clearBtn');
+            const copyBtn = document.getElementById('copyBtn');
+            
+            let ws = null;
+            let isCompleted = false;
+
+            // Initialize WebSocket connection
+            function initWebSocket() {
+                ws = new WebSocket(`ws://${window.location.host}/ws`);
+                
+                ws.onopen = function() {
+                    console.log('WebSocket connected');
+                };
+                
+                ws.onmessage = function(event) {
+                    const data = JSON.parse(event.data);
+                    
+                    if (data.type === 'task_update' && data.id === taskId) {
+                        updateTaskInfo(data);
+                    } else if (data.type === 'task_complete' && data.id === taskId) {
+                        updateTaskInfo(data);
+                        isCompleted = true;
+                        cancelBtn.disabled = true;
+                        
+                        // Update UI to show completed status
+                        taskStatus.textContent = data.status;
+                        taskStatus.className = 'task-status status-' + data.status.toLowerCase();
+                        
+                        // Show duration if available
+                        if (data.duration) {
+                            const minutes = Math.floor(data.duration / 60);
+                            const seconds = data.duration % 60;
+                            taskDuration.textContent = `${minutes}m ${seconds}s`;
+                        }
+                    }
+                };
+                
+                ws.onclose = function() {
+                    console.log('WebSocket disconnected');
+                    // Try to reconnect after a delay if the task is not completed
+                    if (!isCompleted) {
+                        setTimeout(initWebSocket, 5000);
+                    }
+                };
+                
+                ws.onerror = function(error) {
+                    console.error('WebSocket error:', error);
+                };
+            }
+            
+            // Update task information from the server data
+            function updateTaskInfo(data) {
+                taskStatus.textContent = data.status;
+                taskStatus.className = 'task-status status-' + (data.status.includes('failed') ? 'failed' : 
+                                                              data.status.includes('completed') ? 'completed' : 'running');
+                
+                if (data.goal) {
+                    taskGoal.textContent = data.goal;
+                }
+                
+                if (data.created) {
+                    const date = new Date(data.created);
+                    taskCreated.textContent = date.toLocaleString();
+                }
+                
+                if (data.step !== undefined) {
+                    taskStep.textContent = data.step;
+                }
+                
+                if (data.output) {
+                    output.textContent = data.output;
+                    output.parentElement.scrollTop = output.parentElement.scrollHeight;
+                }
+                
+                // Enable cancel button if task is running
+                cancelBtn.disabled = data.status.includes('completed') || 
+                                      data.status.includes('failed') || 
+                                      data.status.includes('restarting');
+            }
+            
+            // Load task information from the API
+            function loadTaskInfo() {
+                fetch(`/api/task/${taskId}`)
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.error) {
+                            output.textContent = `Error: ${data.error}`;
+                            return;
+                        }
+                        
+                        updateTaskInfo(data);
+                        
+                        // Check if task is already completed
+                        isCompleted = data.status === 'completed' || 
+                                     data.status === 'failed' || 
+                                     data.status === 'restarting';
+                        
+                        // Set environment info if available
+                        if (data.environment) {
+                            const envHtml = [];
+                            for (const [key, value] of Object.entries(data.environment)) {
+                                envHtml.push(`<div><strong>${key}:</strong> ${value}</div>`);
+                            }
+                            environment.innerHTML = envHtml.join('');
+                        } else {
+                            environment.innerHTML = '<div>No environment information available</div>';
+                        }
+                    })
+                    .catch(error => {
+                        output.textContent = `Error loading task: ${error}`;
+                    });
+            }
+            
+            // Initialize the page
+            loadTaskInfo();
+            initWebSocket();
+            
+            // Set up event listeners
+            refreshBtn.addEventListener('click', loadTaskInfo);
+            
+            cancelBtn.addEventListener('click', function() {
+                if (confirm('Are you sure you want to cancel this task?')) {
+                    fetch(`/api/task/${taskId}/cancel`, { method: 'POST' })
+                        .then(response => response.json())
+                        .then(data => {
+                            if (data.success) {
+                                alert('Task cancelled successfully');
+                                loadTaskInfo();
+                            } else {
+                                alert(`Failed to cancel task: ${data.error}`);
+                            }
+                        })
+                        .catch(error => {
+                            alert(`Error: ${error}`);
+                        });
+                }
+            });
+            
+            clearBtn.addEventListener('click', function() {
+                output.textContent = '';
+            });
+            
+            copyBtn.addEventListener('click', function() {
+                const textarea = document.createElement('textarea');
+                textarea.value = output.textContent;
+                document.body.appendChild(textarea);
+                textarea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textarea);
+                
+                // Show a temporary confirmation
+                const originalText = copyBtn.textContent;
+                copyBtn.textContent = 'Copied!';
+                setTimeout(() => {
+                    copyBtn.textContent = originalText;
+                }, 2000);
+            });
+        });
+    </script>
 </body>
 </html>
