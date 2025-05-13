@@ -44,6 +44,7 @@ log(){ printf "[%(%F %T)T] %s\n" -1 "$*" | tee -a "$LOG" ; }
 if [[ "$*" == *"--clean"* ]] || [[ "$*" == *"-c"* ]]; then
   echo "🧹 Cleaning old installation..."
   run_elevated pkill -f ollama 2>/dev/null || true
+
   pkill -f "python.*agent.py" 2>/dev/null || true
   run_elevated rm -rf "$WORKDIR" 2>/dev/null || true
   run_elevated rm -f /etc/sudoers.d/90-$ME-ai 2>/dev/null || true
@@ -599,7 +600,8 @@ def ollama_chat(prompt:str) -> str:
                         "You are an autonomous, root-capable agent inside WSL. "
                         "Return exactly one code block starting with #SH or #PY, "
                         "or #DONE when finished, or #SELFUPDATE followed by python code to replace agent.py."},
-                        {"role":"user","content":prompt}]}
+                        {"role":"user","content":prompt}],
+                    "stream": False}  # Set stream to False to get a single response
             
             # Improved error handling for Ollama API
             response = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=600)
