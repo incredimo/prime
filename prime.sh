@@ -197,6 +197,142 @@ if [[ -f "$OLLAMA_BIN" && -x "$OLLAMA_BIN" ]]; then
   run_elevated chmod +x "$OLLAMA_BIN"  # Ensure it's executable
 else
   log "Checking for system-wide Ollama..."
+
+#!/usr/bin/env bash
+#
+# prime.sh   —  WSL-aware, Ollama-powered, gemma3 agent with UI
+# --------------------------------------------------------------------
+set -euo pipefail
+IFS=$'\n\t'
+export DEBIAN_FRONTEND=noninteractive
+
+ME="$(whoami)"
+WORKDIR="$HOME/infinite_ai"
+LOG="$WORKDIR/install.log"
+
+# Create directories and set proper permissions
+mkdir -p "$WORKDIR" "$WORKDIR/bin" "$WORKDIR/logs" "$WORKDIR/ui" "$WORKDIR/tmp"
+chmod 755 "$WORKDIR"
+chmod 755 "$WORKDIR/bin"
+
+log(){ printf "[%(%F %T)T] %s\n" -1 "$*" | tee -a "$LOG" ; }
+
+# Determine if we need sudo
+need_sudo() {
+  if [ "$ME" = "root" ]; then
+    return 1  # False, no sudo needed
+  else
+    if command -v sudo >/dev/null 2>&1; then
+      return 0  # True, sudo exists and needed
+    else
+      echo "Error: Not running as root and sudo not available. Please install sudo or run as root."
+      exit 1
+    fi
+  fi
+}
+
+# Function to run commands with sudo only if needed
+run_elevated() {
+  if need_sudo; then
+    sudo "$@"
+  else
+    "$@"
+  fi
+}
+
+# Clean old setup if requested
+if [[ "$*" == *"--clean"* ]] || [[ "$*" == *"-c"* ]]; then
+  echo "🧹 Cleaning old installation..."
+  run_elevated pkill -f ollama 2>/dev/null || true
+
+  pkill -f "python.*agent.py" 2>/dev/null || true
+  run_elevated rm -rf "$WORKDIR" 2>/dev/null || true
+  run_elevated rm -f /etc/sudoers.d/90-$ME-ai 2>/dev/null || true
+  echo "✅ Cleanup complete. Starting fresh installation."
+fi
+
+install_packages() {
+  log "Installing system prerequisites..."
+  run_elevated apt-get update -y 
+  run_elevated apt-get install -y --no-install-recommends \
+    python3 python3-venv python3-pip git curl wget build-essential \
+    sqlite3 jq unzip net-tools htop tmux lsof nodejs npm
+  
+  # Check if Node.js is too old, install newer version if needed
+  NODE_VERSION=$(node -v 2>/dev/null | cut -d'v' -f2 || echo "0.0.0")
+  if [[ "$(echo "$NODE_VERSION" | cut -d'.' -f1)" -lt "14" ]]; then
+    log "Node.js is too old ($NODE_VERSION). Installing newer version..."
+    if need_sudo; then
+      curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+      sudo apt-get install -y nodejs
+    else
+      curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+      apt-get install -y nodejs
+    fi
+  fi
+}
+
+# ------------------------------------------------------------
+# 2.  base system packages
+# ------------------------------------------------------------
+install_packages
+
+# ------------------------------------------------------------
+# 3.  DOWNLOAD AND INSTALL OLLAMA
+# ------------------------------------------------------------
+OLLAMA_ENDPOINT="http://127.0.0.1:11434"
+OLLAMA_BIN="$WORKDIR/bin/ollama"
+log "🔥 INSTALLING OLLAMA 🔥"
+
+# Kill any existing Ollama processes
+log "Killing any existing Ollama processes..."
+pkill -f ollama 2>/dev/null || true
+sudo pkill -f ollama 2>/dev/null || true
+sleep 2
+
+# Check for port conflicts
+if lsof -i:11434 -sTCP:LISTEN 2>/dev/null; then
+  log "⚠️ Warning: Port 11434 is in use by another process!"
+  log "Attempting to kill the process..."
+  sudo lsof -i:11434 -sTCP:LISTEN -t | xargs sudo kill -9 2>/dev/null || true
+  sleep 2
+fi
+
+# Install Ollama using the official script
+log "Installing Ollama using official script..."
+curl -fsSL https://ollama.com/install.sh | sh
+
+# Find where it was installed
+SYSTEM_OLLAMA=$(which ollama 2>/dev/null || echo "")
+if [[ -n "$SYSTEM_OLLAMA" && -x "$SYSTEM_OLLAMA" ]]; then
+  log "Ollama installed at: $SYSTEM_OLLAMA"
+  # Create a symlink in our bin directory
+  ln -sf "$SYSTEM_OLLAMA" "$OLLAMA_BIN" || {
+    log "Warning: Failed to create symlink. Using direct system path instead."
+    OLLAMA_BIN="$SYSTEM_OLLAMA"
+  }
+else
+  log "Failed to find Ollama after installation. Trying direct download..."
+  
+  # Try downloading pre-compiled binary directly
+  curl -fsSL "https://github.com/ollama/ollama/releases/latest/download/ollama-linux-amd64" -o "$OLLAMA_BIN" || {
+    log "Direct download failed. Trying alternate URL..."
+    curl -fsSL "https://ollama.com/download/ollama-linux-amd64" -o "$OLLAMA_BIN"
+  }
+  
+  # If direct download was successful, make it executable
+  if [[ -f "$OLLAMA_BIN" && ! -x "$OLLAMA_BIN" ]]; then
+    chmod +x "$OLLAMA_BIN"
+    log "Made Ollama binary executable."
+  fi
+fi
+
+# Check if we have a working Ollama binary
+if [[ -f "$OLLAMA_BIN" && -x "$OLLAMA_BIN" ]]; then
+  log "Ollama binary is ready at: $OLLAMA_BIN"
+  run_elevated chmod +x "$OLLAMA_BIN"  # Ensure it's executable
+else
+  log "Checking for system-wide Ollama..."
   SYSTEM_OLLAMA=$(which ollama 2>/dev/null || echo "")
   if [[ -n "$SYSTEM_OLLAMA" && -x "$SYSTEM_OLLAMA" ]]; then
     log "Using system Ollama: $SYSTEM_OLLAMA"
@@ -207,86 +343,46 @@ else
   fi
 fi
 
-# ------------------------------------------------------------
-# 4.  Start Ollama service - WITH MULTIPLE APPROACHES
-# ------------------------------------------------------------
-log "Starting Ollama service..."
-
-# First check if it's already running (e.g., on Windows side)
-if curl -s --max-time 3 "$OLLAMA_ENDPOINT/api/tags" >/dev/null 2>&1; then
-  log "Ollama service already running and accessible."
-  OLLAMA_RUNNING=true
-else
-  OLLAMA_RUNNING=false
+# If we have a binary, try to start it
+if [[ -x "$OLLAMA_BIN" ]]; then
+  # Try to start it directly
+  log "Launching Ollama service from: $OLLAMA_BIN"
+  nohup "$OLLAMA_BIN" serve > "$WORKDIR/logs/ollama.log" 2>&1 &
+  OLLAMA_PID=$!
+  log "Started Ollama with PID $OLLAMA_PID"
   
-  # If we have a binary, try to start it
-  if [[ -x "$OLLAMA_BIN" ]]; then
-    # Try to start it directly
-    log "Launching Ollama service from: $OLLAMA_BIN"
-    nohup "$OLLAMA_BIN" serve > "$WORKDIR/logs/ollama.log" 2>&1 &
+  # Wait for it to start
+  MAX_ATTEMPTS=10
+  for i in $(seq 1 $MAX_ATTEMPTS); do
+    log "Checking Ollama service (attempt $i/$MAX_ATTEMPTS)..."
+    if curl -s --max-time 3 "$OLLAMA_ENDPOINT/api/tags" >/dev/null 2>&1; then
+      log "🎉 SUCCESS! Ollama service is now running! 🎉"
+      OLLAMA_RUNNING=true
+      break
+    fi
+    sleep 3
+  done
+  
+  # If still not running, try with elevated privileges
+  if [[ "${OLLAMA_RUNNING:-false}" == "false" ]]; then
+    log "Failed to start Ollama normally. Trying with elevated privileges..."
+    run_elevated pkill -f ollama 2>/dev/null || true
+    sleep 2
+    run_elevated nohup "$OLLAMA_BIN" serve > "$WORKDIR/logs/ollama_elevated.log" 2>&1 &
     OLLAMA_PID=$!
-    log "Started Ollama with PID $OLLAMA_PID"
+    log "Started Ollama with elevated privileges (PID: $OLLAMA_PID)"
     
-    # Wait for it to start
-    MAX_ATTEMPTS=10
-    for i in $(seq 1 $MAX_ATTEMPTS); do
-      log "Checking Ollama service (attempt $i/$MAX_ATTEMPTS)..."
+    # Wait again
+    for i in $(seq 1 5); do
+      log "Checking Ollama service with elevated privileges (attempt $i/5)..."
       if curl -s --max-time 3 "$OLLAMA_ENDPOINT/api/tags" >/dev/null 2>&1; then
-        log "🎉 SUCCESS! Ollama service is now running! 🎉"
+        log "🎉 SUCCESS! Ollama service is now running with elevated privileges! 🎉"
         OLLAMA_RUNNING=true
         break
       fi
       sleep 3
     done
-    
-    # If still not running, try with elevated privileges
-    if [[ "${OLLAMA_RUNNING:-false}" == "false" ]]; then
-      log "Failed to start Ollama normally. Trying with elevated privileges..."
-      run_elevated pkill -f ollama 2>/dev/null || true
-      sleep 2
-      run_elevated nohup "$OLLAMA_BIN" serve > "$WORKDIR/logs/ollama_elevated.log" 2>&1 &
-      OLLAMA_PID=$!
-      log "Started Ollama with elevated privileges (PID: $OLLAMA_PID)"
-      
-      # Wait again
-      for i in $(seq 1 5); do
-        log "Checking Ollama service with elevated privileges (attempt $i/5)..."
-        if curl -s --max-time 3 "$OLLAMA_ENDPOINT/api/tags" >/dev/null 2>&1; then
-          log "🎉 SUCCESS! Ollama service is now running with elevated privileges! 🎉"
-          OLLAMA_RUNNING=true
-          break
-        fi
-        sleep 3
-      done
-    fi
   fi
-  
-  # If still not running, check if it's running on Windows side
-  if [[ "$OLLAMA_RUNNING" == "false" ]]; then
-    log "Checking if Ollama is running on Windows side..."
-    WIN_IP=$(ip route | grep default | awk '{print $3}' 2>/dev/null || echo "localhost")
-    WINDOWS_OLLAMA_URL="http://$WIN_IP:11434"
-    
-    if curl -s --max-time 3 "$WINDOWS_OLLAMA_URL/api/tags" >/dev/null 2>&1; then
-      log "🎉 Ollama found running on Windows side at $WINDOWS_OLLAMA_URL"
-      OLLAMA_URL="$WINDOWS_OLLAMA_URL"
-      OLLAMA_RUNNING=true
-      # Export this for the agent to use
-      export OLLAMA_URL="$WINDOWS_OLLAMA_URL"
-    else
-      log "Could not find Ollama on Windows side either."
-    fi
-  fi
-fi
-
-# Final check
-if curl -s --max-time 3 "$OLLAMA_ENDPOINT/api/tags" >/dev/null 2>&1; then
-  log "Ollama service is confirmed running."
-  OLLAMA_RUNNING=true
-else
-  log "⚠️ Warning: Could not start Ollama service."
-  log "Will create Windows helper script to run Ollama there."
-  OLLAMA_RUNNING=false
 fi
 
 # ------------------------------------------------------------
@@ -343,13 +439,13 @@ if (Test-Path $ollamaPath) {
     Write-Host "Ollama installation completed."
 }
 
-# Check if Ollama service is running
+# Check if Ollama is running
 $ollamaRunning = $false
 try {
     $response = Invoke-WebRequest -Uri "http://localhost:11434/api/tags" -TimeoutSec 2 -ErrorAction SilentlyContinue
     if ($response.StatusCode -eq 200) {
-        $ollamaRunning = $true
         Write-Host "Ollama service is already running."
+        $ollamaRunning = $true
     }
 } catch {
     Write-Host "Ollama service is not running."
@@ -449,53 +545,58 @@ LOG_DIR.mkdir(exist_ok=True)
 log_queue = queue.Queue(maxsize=1000)  # Limit to prevent memory issues
 log_listeners = set()
 
-def log(msg: str, level="INFO"):
-    """Log a message to console, file, and make it available to UI"""
-    stamp = datetime.datetime.now().strftime("%F %T")
-    line = f"[{stamp}] {msg}"
-    print(line, flush=True)
+def log(msg, level="INFO"):
+    """Log a message to stdout and file"""
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    entry = {"timestamp": now, "level": level, "message": msg}
     
-    # Write to log file
-    with open(LOG_DIR / f"agent_{datetime.date.today()}.log", "a") as f:
-        f.write(line + "\n")
+    # Print to console
+    print(f"[{now}] {msg}")
     
-    # Add to queue for UI
-    log_entry = {
-        "timestamp": stamp,
-        "message": msg,
-        "level": level
-    }
+    # Write to file
+    log_file = LOG_DIR / f"{datetime.datetime.now().strftime('%Y-%m-%d')}.log"
+    with open(log_file, "a") as f:
+        f.write(f"[{now}] {msg}\n")
     
+    # Add to queue for UI consumption
     try:
-        log_queue.put_nowait(log_entry)
+        log_queue.put(entry, block=False)
     except queue.Full:
-        # If queue is full, remove oldest item
+        # If queue is full, remove oldest item and try again
         try:
             log_queue.get_nowait()
-            log_queue.put_nowait(log_entry)
+            log_queue.put(entry, block=False)
         except:
-            pass  # If concurrent access issues, just skip this log for the queue
-    
-    # Notify all listeners
-    for callback in log_listeners:
-        try:
-            callback(log_entry)
-        except:
-            pass  # Ignore errors in callbacks
+            pass  # Give up if still can't add
 
 def get_recent_logs(limit=100):
     """Get recent logs for UI display"""
     logs = []
-    # Copy from queue without removing items
-    try:
-        q_size = log_queue.qsize()
-        for _ in range(min(limit, q_size)):
-            item = log_queue.get()
-            logs.append(item)
-            log_queue.put(item)  # Put it back
-    except:
-        pass  # Ignore queue access issues
-    return logs
+    log_files = sorted(LOG_DIR.glob("*.log"), reverse=True)
+    
+    for log_file in log_files:
+        if len(logs) >= limit:
+            break
+            
+        try:
+            with open(log_file, "r") as f:
+                lines = f.readlines()
+                
+            for line in reversed(lines):
+                if len(logs) >= limit:
+                    break
+                    
+                # Parse log line
+                try:
+                    timestamp = line[1:20]  # Extract timestamp
+                    message = line[22:].strip()  # Extract message
+                    logs.append({"timestamp": timestamp, "level": "INFO", "message": message})
+                except:
+                    continue
+        except:
+            continue
+            
+    return list(reversed(logs))
 
 def add_log_listener(callback):
     """Add a callback function that will be called for each new log entry"""
@@ -503,9 +604,29 @@ def add_log_listener(callback):
     return callback
 
 def remove_log_listener(callback):
-    """Remove a log listener"""
+    """Remove a previously registered callback"""
     if callback in log_listeners:
         log_listeners.remove(callback)
+
+# Start a thread to process the log queue
+def _process_log_queue():
+    while True:
+        try:
+            entry = log_queue.get()
+            
+            # Notify all listeners
+            for callback in list(log_listeners):
+                try:
+                    callback(entry)
+                except:
+                    # Remove failed listeners
+                    remove_log_listener(callback)
+        except:
+            pass
+
+# Start the log processing thread
+log_thread = threading.Thread(target=_process_log_queue, daemon=True)
+log_thread.start()
 PY
 
 # ------------------------------------------------------------
