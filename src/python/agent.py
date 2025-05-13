@@ -180,19 +180,55 @@ print("2. Or use the Windows helper script in {WORKDIR}")
 
 # ---------- execution ----------
 def extract(txt:str):
+    # First, try to extract code from markdown-style code blocks with backticks
+    backtick_pattern = r"```(?:python|bash|sh)?\s*#(SH|PY)\s*\n(.*?)```"
+    m_backticks = re.search(backtick_pattern, txt, re.S|re.M)
+
+    if m_backticks:
+        # Found code in backticks format
+        return (m_backticks.group(1), textwrap.dedent(m_backticks.group(2)))
+
+    # If no backtick format found, try the original format
     m = re.search(r"^#(SH|PY)\s*\n(.*)", txt, re.S|re.M)
     return (m.group(1), textwrap.dedent(m.group(2))) if m else (None,None)
 
 def run_sh(code:str) -> str:
-    log(f"$ bash ‹‹\n{code}\n››")
-    p = subprocess.run(code, shell=True, capture_output=True, text=True, timeout=1800)
+    # Clean the code before executing it
+    clean_code_str = clean_code(code)
+    log(f"$ bash ‹‹\n{clean_code_str}\n››")
+    p = subprocess.run(clean_code_str, shell=True, capture_output=True, text=True, timeout=1800)
     out = p.stdout + p.stderr
     log(out); return out
 
+def clean_code(code:str) -> str:
+    """Clean up code by removing any backticks or markdown artifacts."""
+    # Remove any trailing backticks that might have been included
+    code = re.sub(r'```\s*$', '', code)
+    # Remove any other markdown artifacts that might cause issues
+    code = re.sub(r'^```.*$', '', code, flags=re.MULTILINE)
+    return code.strip()
+
 def run_py(code:str) -> str:
+    # Clean the code before writing it to a file
+    clean_code_str = clean_code(code)
     tmp = SKILL_DIR / f"tmp_{uuid.uuid4().hex}.py"
-    tmp.write_text(code)
-    return run_sh(f"python {tmp}")
+    tmp.write_text(clean_code_str)
+
+    # Try to execute the code
+    result = run_sh(f"python {tmp}")
+
+    # If there's a syntax error related to backticks, try to fix and retry
+    if "SyntaxError: invalid syntax" in result and "```" in result:
+        log("Detected syntax error with backticks, attempting to fix...")
+        # More aggressive cleaning
+        cleaner_code = re.sub(r'```.*?```', '', clean_code_str, flags=re.DOTALL)
+        cleaner_code = re.sub(r'`.*?`', '', cleaner_code)
+
+        # Write the cleaned code and try again
+        tmp.write_text(cleaner_code)
+        result = run_sh(f"python {tmp}")
+
+    return result
 
 async def notify_websockets(data):
     """Send updates to all connected websockets"""
