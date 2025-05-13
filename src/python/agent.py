@@ -82,6 +82,8 @@ def ollama_chat(prompt:str) -> str:
     max_retries = 3
     for attempt in range(max_retries):
         try:
+            # According to Ollama API docs, streaming is enabled by default
+            # We'll handle both streaming and non-streaming responses
             payload = {
                 "model": MODEL,
                 "messages": [
@@ -94,50 +96,17 @@ def ollama_chat(prompt:str) -> str:
                 "stream": False  # Explicitly disable streaming to get a complete response
             }
 
-            # Improved error handling for Ollama API
+            # Make the API request
             response = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=600)
             response.raise_for_status()
 
+            # Process the response
             try:
-                # Handle the response based on whether it's streaming or not
-                content_type = response.headers.get('Content-Type', '')
+                # First try to parse as a single JSON object (non-streaming response)
+                try:
+                    response_json = response.json()
+                    txt = response_json.get("message", {}).get("content", "").strip()
 
-                if 'application/json' in content_type:
-                    # Try to parse as a single JSON object
-                    try:
-                        response_json = response.json()
-                        txt = response_json.get("message", {}).get("content", "").strip()
-
-                        if not txt:
-                            raise ValueError("Empty response from Ollama")
-
-                        remember("assistant", txt)
-                        log(f"←AI REPLY   {txt[:120]}…")
-                        return txt
-                    except json.JSONDecodeError:
-                        # If it fails, it might be a stream of JSON objects
-                        log("Received multiple JSON objects, parsing as stream...")
-
-                        # Split the response by lines and parse each line as a separate JSON object
-                        full_content = ""
-                        for line in response.text.strip().split('\n'):
-                            try:
-                                if line.strip():
-                                    line_json = json.loads(line)
-                                    if "message" in line_json and "content" in line_json["message"]:
-                                        full_content += line_json["message"]["content"]
-                            except json.JSONDecodeError:
-                                log(f"Skipping invalid JSON line: {line[:50]}...")
-
-                        if not full_content:
-                            raise ValueError("Empty content from parsed stream")
-
-                        remember("assistant", full_content)
-                        log(f"←AI REPLY   {full_content[:120]}…")
-                        return full_content
-                else:
-                    # Handle plain text response
-                    txt = response.text.strip()
                     if not txt:
                         raise ValueError("Empty response from Ollama")
 
@@ -145,9 +114,53 @@ def ollama_chat(prompt:str) -> str:
                     log(f"←AI REPLY   {txt[:120]}…")
                     return txt
 
+                except json.JSONDecodeError:
+                    # If that fails, handle as a streaming response (multiple JSON objects)
+                    log("Handling streaming response format...")
+
+                    # Ollama streaming responses are newline-delimited JSON objects
+                    full_content = ""
+                    response_lines = response.text.strip().split('\n')
+
+                    for line in response_lines:
+                        if not line.strip():
+                            continue
+
+                        try:
+                            line_json = json.loads(line)
+
+                            # Extract content from each message chunk
+                            if "message" in line_json and "content" in line_json["message"]:
+                                chunk_content = line_json["message"]["content"]
+                                if chunk_content:  # Only add non-empty content
+                                    full_content += chunk_content
+
+                        except json.JSONDecodeError as json_err:
+                            log(f"Warning: Could not parse line as JSON: {line[:50]}...")
+
+                    if not full_content:
+                        log("No valid content found in streaming response")
+                        # Try to extract any text content from the response
+                        if response.text:
+                            log("Attempting to extract text content directly")
+                            return response.text.strip()
+                        else:
+                            raise ValueError("Empty response from Ollama")
+
+                    remember("assistant", full_content)
+                    log(f"←AI REPLY   {full_content[:120]}…")
+                    return full_content
+
             except Exception as e:
                 log(f"Error processing Ollama response: {str(e)}")
                 log(f"Response content: {response.text[:200]}")
+
+                # Last resort: try to return any text content
+                if response.text:
+                    log("Returning raw response text as fallback")
+                    txt = response.text.strip()
+                    remember("assistant", txt)
+                    return txt
                 raise
 
         except Exception as e:
