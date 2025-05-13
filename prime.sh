@@ -932,27 +932,10 @@ def cli():
         if goal.lower() in {"exit","quit"}: break
         if goal: iterate(goal)
 
-def check_ollama():
-    try:
-        log(f"Checking Ollama connection at {OLLAMA_URL}...")
-        r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
-        r.raise_for_status()
-        models = r.json().get("models", [])
-        model_names = [m.get("name") for m in models if "name" in m]
-        log(f"Available models: {', '.join(model_names) if model_names else 'none'}")
-        return True
-    except Exception as e:
-        log(f"Warning: Could not connect to Ollama: {e}")
-        log(f"Please ensure Ollama is running at {OLLAMA_URL}")
-        log("You can start Ollama with 'ollama serve' in another terminal")
-        return False
-
 def start_ollama():
     """Try to start Ollama if it's not running"""
-    if check_ollama():
-        return True
+    log("Attempting to start Ollama...")
     
-    log("Ollama not running. Attempting to start it...")
     # Try local binary first
     local_bin = WORKDIR / "bin" / "ollama"
     if local_bin.exists() and os.access(local_bin, os.X_OK):
@@ -976,51 +959,36 @@ def start_ollama():
         return False
 
 def check_ollama():
-    """Check if Ollama is running and responding correctly"""
+    """Check if Ollama is running"""
     try:
-        # First try a simple ping to the API
-        response = requests.get(f"{OLLAMA_URL}/api/tags", timeout=3)
+        response = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
         response.raise_for_status()
+        models = response.json().get("models", [])
+        model_names = [m.get("name") for m in models if "name" in m]
+        log(f"Available models: {', '.join(model_names) if model_names else 'none'}")
         
-        # Try a simple completion to verify it's working properly
-        test_payload = {
-            "model": MODEL,
-            "messages": [
-                {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": "Say hello"}
-            ]
-        }
-        
-        response = requests.post(f"{OLLAMA_URL}/api/chat", json=test_payload, timeout=10)
-        response.raise_for_status()
-        
-        # Verify we can parse the response
-        response_json = response.json()
-        if "message" in response_json and "content" in response_json["message"]:
-            log(f"Ollama is working correctly with model: {MODEL}")
-            return True
-        else:
-            log("Ollama response format is unexpected")
+        # Check if our model exists
+        if not any(MODEL in name for name in model_names):
+            log(f"Warning: Model {MODEL} not found in available models")
             return False
-            
+        return True
     except Exception as e:
-        log(f"Ollama check failed: {str(e)}")
+        log(f"Ollama check failed: {e}")
         return False
 
 if __name__=="__main__":
-    # Start Ollama if needed and verify it's working
+    # Check if Ollama is running and has our model
     if not check_ollama():
-        log("Attempting to restart Ollama...")
+        log(f"Ollama is not running or missing model {MODEL}. Attempting to start...")
         start_ollama()
         
-        # If still not working, try to use a different model
+        # If still not working, try a different model
         if not check_ollama() and MODEL == "gemma3":
             log("Trying with a different model...")
-            # Try with a simpler model
             MODEL = "llama2"
             if not check_ollama():
-                log("Still having issues with Ollama. Please check the service manually.")
-    
+                log("Still having issues with Ollama. Please check manually.")
+
     # Start Web UI in a separate thread
     ui_thread = threading.Thread(
         target=lambda: __import__("uvicorn").run(
@@ -2182,6 +2150,8 @@ echo "
 💡 Options:
   bash prime.sh --clean  # Clean existing installation before setup
 "
+
+
 
 
 
