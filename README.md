@@ -1,4 +1,4 @@
-# Prime: WSL-aware, Ollama-powered AI Agent with Web UI
+# Prime:  Ollama-powered AI Agent with Web UI
 
 ![Version](https://img.shields.io/badge/version-0.1.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)

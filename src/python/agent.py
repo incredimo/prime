@@ -83,7 +83,7 @@ def ollama_chat(prompt:str) -> str:
     for attempt in range(max_retries):
         try:
             # Parse the prompt to extract system message if present
-            system_content = "You are an autonomous, root-capable agent inside WSL. Return exactly one code block starting with #SH or #PY, or #DONE when finished, or #SELFUPDATE followed by python code to replace agent.py."
+            system_content = "You are an autonomous, root-capable agent running on a Linux system. Return exactly one code block starting with #SH or #PY, or #DONE when finished, or #SELFUPDATE followed by python code to replace agent.py."
             user_content = prompt
 
             # Check if the prompt contains a system message
@@ -259,7 +259,7 @@ def iterate(goal:str, task_id=None):
 
     try:
         # Initial prompt to the LLM with the goal
-        system_prompt = """You are an autonomous, root-capable agent inside WSL.
+        system_prompt = """You are an autonomous, root-capable agent inside Linux/WSL.
 You will be given a goal to accomplish. Break it down into steps and execute them one by one.
 For each step, return exactly one code block starting with #SH or #PY.
 When the goal is completed, return #DONE.
@@ -269,7 +269,7 @@ Important:
 1. After each step, you will receive the output of your code execution.
 2. If there are errors, fix them in your next step.
 3. Continue until the goal is accomplished or you determine it cannot be completed.
-4. If you're running as root, don't use sudo.
+4. If you're running as root, so no need to use sudo in the commands.
 5. Check the environment before assuming commands are available.
 """
 

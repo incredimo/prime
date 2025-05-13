@@ -1,5 +1,5 @@
 #
-# prime.sh   —  WSL-aware, Ollama-powered, gemma3 agent with UI
+# prime.sh   —   Ollama-powered, gemma3 agent with UI
 # --------------------------------------------------------------------
 set -euo pipefail
 IFS=$'\n\t'
