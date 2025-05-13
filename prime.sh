@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# bootstrap_infinite_ai.sh   —  WSL-aware, Ollama-powered, gemma3 agent with UI
+# prime.sh   —  WSL-aware, Ollama-powered, gemma3 agent with UI
 # --------------------------------------------------------------------
 set -euo pipefail
 IFS=$'\n\t'
@@ -192,7 +192,7 @@ fi
 # Check if we have a working Ollama binary
 if [[ -f "$OLLAMA_BIN" && -x "$OLLAMA_BIN" ]]; then
   log "Ollama binary is ready at: $OLLAMA_BIN"
-  sudo chmod +x "$OLLAMA_BIN"  # Ensure it's executable
+  run_elevated chmod +x "$OLLAMA_BIN"  # Ensure it's executable
 else
   log "Checking for system-wide Ollama..."
   SYSTEM_OLLAMA=$(which ollama 2>/dev/null || echo "")
@@ -237,20 +237,20 @@ else
       sleep 3
     done
     
-    # If still not running, try with sudo
-    if [[ "$OLLAMA_RUNNING" == "false" ]]; then
-      log "Failed to start Ollama normally. Trying with sudo..."
-      sudo pkill -f ollama 2>/dev/null || true
+    # If still not running, try with elevated privileges
+    if [[ "${OLLAMA_RUNNING:-false}" == "false" ]]; then
+      log "Failed to start Ollama normally. Trying with elevated privileges..."
+      run_elevated pkill -f ollama 2>/dev/null || true
       sleep 2
-      sudo nohup "$OLLAMA_BIN" serve > "$WORKDIR/logs/ollama_sudo.log" 2>&1 &
+      run_elevated nohup "$OLLAMA_BIN" serve > "$WORKDIR/logs/ollama_elevated.log" 2>&1 &
       OLLAMA_PID=$!
-      log "Started Ollama with sudo (PID: $OLLAMA_PID)"
+      log "Started Ollama with elevated privileges (PID: $OLLAMA_PID)"
       
       # Wait again
       for i in $(seq 1 5); do
-        log "Checking Ollama service with sudo (attempt $i/5)..."
+        log "Checking Ollama service with elevated privileges (attempt $i/5)..."
         if curl -s --max-time 3 "$OLLAMA_ENDPOINT/api/tags" >/dev/null 2>&1; then
-          log "🎉 SUCCESS! Ollama service is now running with sudo! 🎉"
+          log "🎉 SUCCESS! Ollama service is now running with elevated privileges! 🎉"
           OLLAMA_RUNNING=true
           break
         fi
@@ -2059,6 +2059,7 @@ echo "
   curl http://localhost:8000/api/status
 
 💡 Options:
-  bash bootstrap_infinite_ai.sh --clean  # Clean existing installation before setup
+  bash prime.sh --clean  # Clean existing installation before setup
 "
+
 
