@@ -4526,8 +4526,345 @@ cat > "$WORKDIR/ui/templates/task_logs.html" <<'HTML'
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Infinite AI - Task Details</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+    <!-- Custom CSS without Bootstrap dependencies -->
+    <style>
+        /* Reset and base styles */
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f8f9fa;
+            line-height: 1.6;
+            color: #333;
+        }
+
+        /* Navigation */
+        .navbar {
+            background-color: #343a40;
+            color: white;
+            padding: 1rem;
+            box-shadow: 0 2px 4px rgba(0,0,0,.1);
+        }
+
+        .navbar-brand {
+            font-size: 1.25rem;
+            font-weight: bold;
+            color: white;
+            text-decoration: none;
+        }
+
+        .navbar-nav {
+            display: flex;
+            list-style: none;
+            margin-top: 1rem;
+        }
+
+        .nav-item {
+            margin-right: 1rem;
+        }
+
+        .nav-link {
+            color: rgba(255,255,255,0.8);
+            text-decoration: none;
+            transition: color 0.3s;
+        }
+
+        .nav-link:hover {
+            color: white;
+        }
+
+        /* Layout */
+        .container {
+            width: 100%;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 1rem;
+        }
+
+        .row {
+            display: flex;
+            flex-wrap: wrap;
+            margin: 0 -0.5rem;
+        }
+
+        .col {
+            flex: 1;
+            padding: 0 0.5rem;
+        }
+
+        .col-3 {
+            flex: 0 0 25%;
+            max-width: 25%;
+            padding: 0 0.5rem;
+        }
+
+        .col-9 {
+            flex: 0 0 75%;
+            max-width: 75%;
+            padding: 0 0.5rem;
+        }
+
+        /* Buttons */
+        .btn {
+            display: inline-block;
+            font-weight: 400;
+            text-align: center;
+            white-space: nowrap;
+            vertical-align: middle;
+            user-select: none;
+            border: 1px solid transparent;
+            padding: 0.375rem 0.75rem;
+            font-size: 1rem;
+            line-height: 1.5;
+            border-radius: 0.25rem;
+            transition: color 0.15s ease-in-out, background-color 0.15s ease-in-out, border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+            cursor: pointer;
+            text-decoration: none;
+        }
+
+        .btn-primary {
+            color: #fff;
+            background-color: #007bff;
+            border-color: #007bff;
+        }
+
+        .btn-primary:hover {
+            background-color: #0069d9;
+            border-color: #0062cc;
+        }
+
+        .btn-secondary {
+            color: #fff;
+            background-color: #6c757d;
+            border-color: #6c757d;
+        }
+
+        .btn-secondary:hover {
+            background-color: #5a6268;
+            border-color: #545b62;
+        }
+
+        .btn-danger {
+            color: #fff;
+            background-color: #dc3545;
+            border-color: #dc3545;
+        }
+
+        .btn-danger:hover {
+            background-color: #c82333;
+            border-color: #bd2130;
+        }
+
+        .btn-outline-primary {
+            color: #007bff;
+            background-color: transparent;
+            border-color: #007bff;
+        }
+
+        .btn-outline-primary:hover {
+            color: #fff;
+            background-color: #007bff;
+        }
+
+        .btn-outline-secondary {
+            color: #6c757d;
+            background-color: transparent;
+            border-color: #6c757d;
+        }
+
+        .btn-outline-secondary:hover {
+            color: #fff;
+            background-color: #6c757d;
+        }
+
+        .btn-outline-danger {
+            color: #dc3545;
+            background-color: transparent;
+            border-color: #dc3545;
+        }
+
+        .btn-outline-danger:hover {
+            color: #fff;
+            background-color: #dc3545;
+        }
+
+        /* Cards */
+        .card {
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+            word-wrap: break-word;
+            background-color: #fff;
+            background-clip: border-box;
+            border: 1px solid rgba(0,0,0,.125);
+            border-radius: 0.25rem;
+            margin-bottom: 1rem;
+        }
+
+        .card-header {
+            padding: 0.75rem 1.25rem;
+            margin-bottom: 0;
+            background-color: rgba(0,0,0,.03);
+            border-bottom: 1px solid rgba(0,0,0,.125);
+        }
+
+        .card-body {
+            flex: 1 1 auto;
+            padding: 1.25rem;
+        }
+
+        /* Badges */
+        .badge {
+            display: inline-block;
+            padding: 0.25em 0.4em;
+            font-size: 75%;
+            font-weight: 700;
+            line-height: 1;
+            text-align: center;
+            white-space: nowrap;
+            vertical-align: baseline;
+            border-radius: 0.25rem;
+        }
+
+        /* Tabs */
+        .nav-tabs {
+            display: flex;
+            flex-wrap: wrap;
+            padding-left: 0;
+            margin-bottom: 0;
+            list-style: none;
+            border-bottom: 1px solid #dee2e6;
+        }
+
+        .nav-tabs .nav-item {
+            margin-bottom: -1px;
+        }
+
+        .nav-tabs .nav-link {
+            border: 1px solid transparent;
+            border-top-left-radius: 0.25rem;
+            border-top-right-radius: 0.25rem;
+            display: block;
+            padding: 0.5rem 1rem;
+        }
+
+        .nav-tabs .nav-link.active {
+            color: #495057;
+            background-color: #fff;
+            border-color: #dee2e6 #dee2e6 #fff;
+        }
+
+        .tab-content > .tab-pane {
+            display: none;
+        }
+
+        .tab-content > .active {
+            display: block;
+        }
+
+        /* Utilities */
+        .text-center {
+            text-align: center;
+        }
+
+        .mt-2 {
+            margin-top: 0.5rem;
+        }
+
+        .mt-3 {
+            margin-top: 1rem;
+        }
+
+        .mb-0 {
+            margin-bottom: 0;
+        }
+
+        .mb-3 {
+            margin-bottom: 1rem;
+        }
+
+        .py-3 {
+            padding-top: 1rem;
+            padding-bottom: 1rem;
+        }
+
+        .py-4 {
+            padding-top: 1.5rem;
+            padding-bottom: 1.5rem;
+        }
+
+        .py-5 {
+            padding-top: 3rem;
+            padding-bottom: 3rem;
+        }
+
+        .d-flex {
+            display: flex;
+        }
+
+        .justify-content-between {
+            justify-content: space-between;
+        }
+
+        .align-items-center {
+            align-items: center;
+        }
+
+        .text-white {
+            color: white;
+        }
+
+        .text-muted {
+            color: #6c757d;
+        }
+
+        .visually-hidden {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0, 0, 0, 0);
+            white-space: nowrap;
+            border: 0;
+        }
+
+        /* Icons (simple replacements) */
+        .icon {
+            display: inline-block;
+            width: 1em;
+            height: 1em;
+            vertical-align: -0.125em;
+            fill: currentColor;
+        }
+
+        /* Spinner */
+        .spinner {
+            display: inline-block;
+            width: 2rem;
+            height: 2rem;
+            border: 0.25em solid currentColor;
+            border-right-color: transparent;
+            border-radius: 50%;
+            animation: spinner-border .75s linear infinite;
+        }
+
+        .spinner-sm {
+            width: 1rem;
+            height: 1rem;
+            border-width: 0.2em;
+        }
+
+        @keyframes spinner-border {
+            to { transform: rotate(360deg); }
+        }
+    </style>
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -4740,34 +5077,29 @@ cat > "$WORKDIR/ui/templates/task_logs.html" <<'HTML'
     </style>
 </head>
 <body>
-    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
-        <div class="container-fluid">
+    <nav class="navbar">
+        <div class="container">
             <a class="navbar-brand" href="/">
-                <i class="bi bi-robot"></i> Infinite AI Agent
+                🤖 Infinite AI Agent
             </a>
-            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
-                <span class="navbar-toggler-icon"></span>
-            </button>
-            <div class="collapse navbar-collapse" id="navbarNav">
-                <ul class="navbar-nav">
-                    <li class="nav-item">
-                        <a class="nav-link" href="/"><i class="bi bi-house-fill"></i> Home</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="/logs"><i class="bi bi-journal-text"></i> System Logs</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="/history"><i class="bi bi-clock-history"></i> Task History</a>
-                    </li>
-                </ul>
-            </div>
+            <ul class="navbar-nav">
+                <li class="nav-item">
+                    <a class="nav-link" href="/">🏠 Home</a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" href="/logs">📋 System Logs</a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" href="/history">⏱️ Task History</a>
+                </li>
+            </ul>
         </div>
     </nav>
 
-    <div class="container-fluid py-4">
+    <div class="container py-4">
         <div class="row">
             <!-- Left Column - Task Info -->
-            <div class="col-lg-3">
+            <div class="col-3">
                 <div class="d-flex justify-content-between align-items-center mb-3">
                     <h2 class="mb-0">Task Details</h2>
                 </div>
@@ -4847,11 +5179,11 @@ cat > "$WORKDIR/ui/templates/task_logs.html" <<'HTML'
             </div>
 
             <!-- Right Column - Terminal Output -->
-            <div class="col-lg-9">
+            <div class="col-9">
                 <div class="card border-0 shadow-sm">
                     <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center py-3">
                         <h5 class="mb-0">
-                            <i class="bi bi-terminal"></i> Task Execution
+                            💻 Task Execution
                             <span class="step-indicator" id="taskProgress">Step <span id="currentStep">0</span> of <span id="totalSteps">?</span></span>
                         </h5>
                         <div>
@@ -4859,8 +5191,8 @@ cat > "$WORKDIR/ui/templates/task_logs.html" <<'HTML'
                                 <input class="form-check-input" type="checkbox" id="autoScrollToggle" checked>
                                 <label class="form-check-label text-white" for="autoScrollToggle">Auto-scroll</label>
                             </div>
-                            <button class="btn btn-sm btn-outline-light ms-2" id="scrollToBottomBtn">
-                                <i class="bi bi-arrow-down"></i>
+                            <button class="btn btn-outline-light" id="scrollToBottomBtn">
+                                ⬇️
                             </button>
                         </div>
                     </div>
@@ -4880,18 +5212,18 @@ cat > "$WORKDIR/ui/templates/task_logs.html" <<'HTML'
                                 <div class="terminal">
                                     <div class="terminal-actions">
                                         <button id="copyBtn" title="Copy to clipboard">
-                                            <i class="bi bi-clipboard"></i> Copy
+                                            📋 Copy
                                         </button>
                                         <button id="downloadBtn" title="Download output">
-                                            <i class="bi bi-download"></i> Download
+                                            💾 Download
                                         </button>
                                         <button id="clearBtn" title="Clear terminal">
-                                            <i class="bi bi-trash"></i> Clear
+                                            🗑️ Clear
                                         </button>
                                     </div>
                                     <div class="terminal-output" id="terminalOutput">
                                         <div class="text-center py-5" id="loadingOutput">
-                                            <div class="spinner-border text-light" role="status">
+                                            <div class="spinner" role="status">
                                                 <span class="visually-hidden">Loading...</span>
                                             </div>
                                             <p class="mt-3 text-muted">Loading task output...</p>
@@ -4903,10 +5235,10 @@ cat > "$WORKDIR/ui/templates/task_logs.html" <<'HTML'
                                 <div class="terminal">
                                     <div class="terminal-actions">
                                         <button id="rawCopyBtn" title="Copy raw output">
-                                            <i class="bi bi-clipboard"></i> Copy
+                                            📋 Copy
                                         </button>
                                         <button id="rawDownloadBtn" title="Download raw output">
-                                            <i class="bi bi-download"></i> Download
+                                            💾 Download
                                         </button>
                                     </div>
                                     <pre id="rawOutput" class="mb-0">Loading raw output...</pre>
@@ -4920,7 +5252,36 @@ cat > "$WORKDIR/ui/templates/task_logs.html" <<'HTML'
     </div>
 
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- Custom JavaScript to replace Bootstrap functionality -->
+    <script>
+        // Simple tab functionality
+        function setupTabs() {
+            const tabLinks = document.querySelectorAll('.nav-link');
+            const tabPanes = document.querySelectorAll('.tab-pane');
+
+            tabLinks.forEach(link => {
+                link.addEventListener('click', function(e) {
+                    e.preventDefault();
+
+                    // Remove active class from all tabs
+                    tabLinks.forEach(tab => tab.classList.remove('active'));
+                    tabPanes.forEach(pane => pane.classList.remove('active', 'show'));
+
+                    // Add active class to current tab
+                    this.classList.add('active');
+
+                    // Show corresponding tab content
+                    const target = this.getAttribute('href').substring(1);
+                    document.getElementById(target).classList.add('active', 'show');
+                });
+            });
+        }
+
+        // Initialize tabs when DOM is loaded
+        document.addEventListener('DOMContentLoaded', function() {
+            setupTabs();
+        });
+    </script>
     <script>
         $(document).ready(function() {
             // Elements

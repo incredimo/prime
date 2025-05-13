@@ -84,6 +84,9 @@ function Invoke-GitCommand {
     }
 }
 
+# run build.ps1
+Invoke-GitCommand -Command "./build.ps1" -DryRun:$DryRun
+
 # Main script execution
 $currentVersion = Get-CurrentVersion
 $newVersion = Bump-Version -CurrentVersion $currentVersion -Type $VersionType
