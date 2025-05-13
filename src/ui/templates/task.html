@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Task Details - Infinite AI Agent</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 8V4m0 8v-4m0 8v-4m0 8v-4M4 6h16M4 10h16M4 14h16M4 18h16"></path>
+                </svg>
+                <span>Infinite AI Agent</span>
+            </div>
+            <nav>
+                <ul>
+                    <li><a href="/">Home</a></li>
+                    <li><a href="/history">History</a></li>
+                    <li><a href="/logs">Logs</a></li>
+                </ul>
+            </nav>
+        </header>
+        
+        <input type="hidden" id="task-id" value="{{ task_id }}">
+        
+        <div class="card">
+            <div class="card-header">
+                <div>
+                    <h2 class="card-title">Task Details</h2>
+                    <div id="task-goal" style="margin-top: 5px;">Loading...</div>
+                </div>
+                <div>
+                    Status: <span id="task-status" class="status status-loading">Loading...</span>
+                </div>
+            </div>
+            <div class="output-code" id="task-output">
+                Loading task details...
+            </div>
+            <div style="margin-top: 15px;">
+                <a href="/" class="button button-secondary">Back to Home</a>
+            </div>
+        </div>
+    </div>
+    
+    <script src="/static/app.js"></script>
+</body>
+</html>

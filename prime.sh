@@ -1711,6 +1711,50 @@ document.addEventListener('DOMContentLoaded', function() {
 JS
 
 
+# history.html template
+cat > "$WORKDIR/ui/templates/history.html" <<'HTML'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Task History - Infinite AI Agent</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 8V4m0 8v-4m0 8v-4m0 8v-4M4 6h16M4 10h16M4 14h16M4 18h16"></path>
+                </svg>
+                <span>Infinite AI Agent</span>
+            </div>
+            <nav>
+                <ul>
+                    <li><a href="/">Home</a></li>
+                    <li><a href="/history" class="active">History</a></li>
+                    <li><a href="/logs">Logs</a></li>
+                </ul>
+            </nav>
+        </header>
+        
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">Task History</h2>
+            </div>
+            <div id="task-history" class="task-list">
+                <div class="loader"></div>
+            </div>
+        </div>
+    </div>
+    
+    <script src="/static/app.js"></script>
+</body>
+</html>
+HTML
+
+
 # index.html template
 cat > "$WORKDIR/ui/templates/index.html" <<'HTML'
 <!DOCTYPE html>
@@ -1795,6 +1839,291 @@ cat > "$WORKDIR/ui/templates/index.html" <<'HTML'
 </body>
 </html>
 HTML
+
+
+# logs.html template
+cat > "$WORKDIR/ui/templates/logs.html" <<'HTML'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Logs - Infinite AI Agent</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 8V4m0 8v-4m0 8v-4m0 8v-4M4 6h16M4 10h16M4 14h16M4 18h16"></path>
+                </svg>
+                <span>Infinite AI Agent</span>
+            </div>
+            <nav>
+                <ul>
+                    <li><a href="/">Home</a></li>
+                    <li><a href="/history">History</a></li>
+                    <li><a href="/logs" class="active">Logs</a></li>
+                </ul>
+            </nav>
+        </header>
+        
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">Live Logs</h2>
+                <div>
+                    WebSocket: <span id="ws-status" class="status-offline">Disconnected</span>
+                </div>
+            </div>
+            <div id="log-console" class="console">
+                <div class="console-line">Connecting to log stream...</div>
+            </div>
+        </div>
+    </div>
+    
+    <script src="/static/app.js"></script>
+</body>
+</html>
+HTML
+
+
+# task.html template
+cat > "$WORKDIR/ui/templates/task.html" <<'HTML'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Task Details - Infinite AI Agent</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 8V4m0 8v-4m0 8v-4m0 8v-4M4 6h16M4 10h16M4 14h16M4 18h16"></path>
+                </svg>
+                <span>Infinite AI Agent</span>
+            </div>
+            <nav>
+                <ul>
+                    <li><a href="/">Home</a></li>
+                    <li><a href="/history">History</a></li>
+                    <li><a href="/logs">Logs</a></li>
+                </ul>
+            </nav>
+        </header>
+        
+        <input type="hidden" id="task-id" value="{{ task_id }}">
+        
+        <div class="card">
+            <div class="card-header">
+                <div>
+                    <h2 class="card-title">Task Details</h2>
+                    <div id="task-goal" style="margin-top: 5px;">Loading...</div>
+                </div>
+                <div>
+                    Status: <span id="task-status" class="status status-loading">Loading...</span>
+                </div>
+            </div>
+            <div class="output-code" id="task-output">
+                Loading task details...
+            </div>
+            <div style="margin-top: 15px;">
+                <a href="/" class="button button-secondary">Back to Home</a>
+            </div>
+        </div>
+    </div>
+    
+    <script src="/static/app.js"></script>
+</body>
+</html>
+HTML
+
+
+# ------------------------------------------------------------
+# 11.  watchdog launcher with Web UI support
+# ------------------------------------------------------------
+cat > run.sh <<'SH'
+#!/usr/bin/env bash
+cd "$(dirname "$0")" || exit 1
+source venv/bin/activate
+
+# Function to check if Ollama is running
+check_ollama() {
+  curl -s --max-time 3 "http://127.0.0.1:11434/api/tags" >/dev/null 2>&1
+}
+
+# Function to check Windows Ollama
+check_windows_ollama() {
+  WIN_IP=$(ip route | grep default | awk '{print $3}' 2>/dev/null || echo "localhost")
+  curl -s --max-time 3 "http://$WIN_IP:11434/api/tags" >/dev/null 2>&1
+}
+
+# Function to start Ollama
+start_ollama() {
+  echo "[watchdog] Starting Ollama service..."
+  
+  # Try local binary first
+  if [[ -x "$PWD/bin/ollama" ]]; then
+    echo "[watchdog] Using local Ollama binary"
+    nohup "$PWD/bin/ollama" serve > logs/ollama_watchdog.log 2>&1 &
+    OLLAMA_PID=$!
+    echo "[watchdog] Started Ollama with PID $OLLAMA_PID"
+  else
+    # Try system binary
+    if command -v ollama >/dev/null 2>&1; then
+      echo "[watchdog] Using system Ollama binary"
+      nohup ollama serve > logs/ollama_watchdog.log 2>&1 &
+      OLLAMA_PID=$!
+      echo "[watchdog] Started Ollama with PID $OLLAMA_PID"
+    else
+      echo "[watchdog] No Ollama binary found. Please install it manually."
+    fi
+  fi
+  
+  # Wait for Ollama to start
+  for i in {1..10}; do
+    if check_ollama; then
+      echo "[watchdog] Ollama service is now available!"
+      return 0
+    fi
+    echo "[watchdog] Waiting for Ollama service (attempt $i/10)..."
+    sleep 2
+  done
+  
+  # Check if Ollama is running on Windows
+  if check_windows_ollama; then
+    echo "[watchdog] Found Ollama running on Windows side."
+    WIN_IP=$(ip route | grep default | awk '{print $3}' 2>/dev/null || echo "localhost")
+    export OLLAMA_URL="http://$WIN_IP:11434"
+    echo "[watchdog] Using Windows Ollama at $OLLAMA_URL"
+    return 0
+  fi
+  
+  echo "[watchdog] Warning: Could not start Ollama service."
+  echo "[watchdog] Consider using the Windows helper script or start Ollama manually."
+  return 1
+}
+
+# Get IP address for display
+get_ip() {
+  hostname -I | awk '{print $1}'
+}
+
+# Help ensure Ollama is running
+OLLAMA_RUNNING=false
+if check_ollama; then
+  echo "[watchdog] Ollama service already running."
+  OLLAMA_RUNNING=true
+elif check_windows_ollama; then
+  echo "[watchdog] Found Ollama running on Windows side."
+  WIN_IP=$(ip route | grep default | awk '{print $3}' 2>/dev/null || echo "localhost")
+  export OLLAMA_URL="http://$WIN_IP:11434"
+  echo "[watchdog] Using Windows Ollama at $OLLAMA_URL"
+  OLLAMA_RUNNING=true
+else
+  echo "[watchdog] Ollama service not running. Attempting to start..."
+  if start_ollama; then
+    OLLAMA_RUNNING=true
+  else
+    echo "[watchdog] Failed to start Ollama service."
+    exit 1
+  fi
+fi
+
+# Start the agent
+echo "[watchdog] Starting Infinite AI Agent..."
+nohup ./agent.py > logs/agent.log 2>&1 &
+AGENT_PID=$!
+echo "[watchdog] Infinite AI Agent started with PID $AGENT_PID"
+
+# Monitor the agent process
+while true; do
+  if ! kill -0 "$AGENT_PID" 2>/dev/null; then
+    echo "[watchdog] Infinite AI Agent process terminated. Restarting..."
+    nohup ./agent.py > logs/agent.log 2>&1 &
+    AGENT_PID=$!
+    echo "[watchdog] Infinite AI Agent restarted with PID $AGENT_PID"
+  fi
+  sleep 10
+done
+SH
+chmod +x run.sh
+
+
+# ------------------------------------------------------------
+# 12. Create handy shortcut scripts
+# ------------------------------------------------------------
+cat > start_agent.sh <<'SH'
+#!/usr/bin/env bash
+cd "$(dirname "$0")" || exit 1
+./run.sh
+SH
+chmod +x start_agent.sh
+
+
+cat > start_ollama.sh <<'SH'
+#!/usr/bin/env bash
+cd "$(dirname "$0")" || exit 1
+
+# Check if Ollama is already running
+if curl -s --max-time 3 "http://127.0.0.1:11434/api/tags" >/dev/null 2>&1; then
+  echo "Ollama is already running."
+  exit 0
+fi
+
+# Try local binary first
+if [[ -x "$PWD/bin/ollama" ]]; then
+  echo "Starting local Ollama binary..."
+  exec "$PWD/bin/ollama" serve
+else
+  # Try system binary
+  if command -v ollama >/dev/null 2>&1; then
+    echo "Starting system Ollama binary..."
+    exec ollama serve
+  else
+    echo "Error: No Ollama binary found."
+    echo "Please install Ollama or use the Windows helper script."
+    exit 1
+  fi
+fi
+SH
+chmod +x start_ollama.sh
+
+log "Bootstrap completed ✓"
+echo "
+╔═════════════════════════════════════════════════════════════╗
+║ 🚀 INFINITE AI BOOTSTRAP COMPLETED                          ║
+╚═════════════════════════════════════════════════════════════╝
+
+📋 Next steps:
+  cd $WORKDIR
+  ./start_agent.sh    # Runs the agent with Web UI and auto-restart
+
+🌐 Access Web UI:
+  http://localhost:8080
+  http://$(hostname -I | awk '{print $1}'):8080
+
+🤖 If Ollama isn't working in WSL:
+  1. Use the Windows helper script:
+     powershell.exe -ExecutionPolicy Bypass -File C:/repo/prime/windows_ollama_helper.ps1
+  2. This will install and start Ollama on Windows
+  3. WSL will connect to the Windows Ollama instance automatically
+
+🛠️ Available Commands:
+  ./start_ollama.sh   # Start just Ollama service
+  ./run.sh            # Start agent with watchdog and Web UI
+  
+  # API Examples:
+  curl -X POST http://localhost:8000/api/goal -d '{\"text\":\"<your goal>\"}' -H 'Content-Type: application/json'
+  curl http://localhost:8000/api/status
+
+💡 Options:
+  bash prime.sh --clean  # Clean existing installation before setup
+"
 
 
 log "Bootstrap completed ✓"
