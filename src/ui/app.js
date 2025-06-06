@@ -112,6 +112,14 @@ function loadActiveTasks() {
       for (const [id, task] of Object.entries(tasks)) {
         const taskItem = document.createElement('div');
         taskItem.className = 'task-item';
+        // Determine if cancel/retry should be shown
+        const status = (task.status || '').toLowerCase();
+        let controls = `<a href="/task/${id}" class="button" style="margin-right:8px;">View Details</a>`;
+        if (status.includes('running') || status.includes('starting') || status.includes('prompting')) {
+          controls += `<button class="button button-danger" data-cancel="${id}">Cancel</button>`;
+        } else if (status.includes('failed') || status.includes('completed') || status.includes('cancelled')) {
+          controls += `<button class="button button-secondary" data-retry="${id}">Retry</button>`;
+        }
         taskItem.innerHTML = `
           <div class="task-header">
             <div class="task-goal">${task.goal}</div>
@@ -119,9 +127,40 @@ function loadActiveTasks() {
           </div>
           <div class="task-meta">
             <div>Created: ${new Date(task.created).toLocaleString()}</div>
-            <a href="/task/${id}" class="button">View Details</a>
+            ${controls}
           </div>
         `;
+        // Add event listeners for cancel/retry
+        setTimeout(() => {
+          const cancelBtn = taskItem.querySelector('[data-cancel]');
+          if (cancelBtn) {
+            cancelBtn.onclick = function() {
+              if (confirm('Cancel this task?')) {
+                fetch(`/api/task/${id}/cancel`, { method: 'POST' })
+                  .then(resp => resp.json())
+                  .then(data => {
+                    loadActiveTasks();
+                  });
+              }
+            };
+          }
+          const retryBtn = taskItem.querySelector('[data-retry]');
+          if (retryBtn) {
+            retryBtn.onclick = function() {
+              if (confirm('Retry this task?')) {
+                fetch(`/api/task/${id}/retry`, { method: 'POST' })
+                  .then(resp => resp.json())
+                  .then(data => {
+                    if (data && data.id) {
+                      window.location.href = `/task/${data.id}`;
+                    } else {
+                      alert('Failed to retry task.');
+                    }
+                  });
+              }
+            };
+          }
+        }, 0);
         tasksList.appendChild(taskItem);
       }
     })
@@ -149,7 +188,7 @@ function loadTaskHistory() {
       tasks.forEach(task => {
         const taskItem = document.createElement('div');
         taskItem.className = 'task-item';
-        
+  
         // Format duration nicely
         let duration = 'N/A';
         if (task.duration) {
@@ -161,7 +200,14 @@ function loadTaskHistory() {
             duration = `${Math.floor(task.duration / 3600)} hours, ${Math.floor((task.duration % 3600) / 60)} minutes`;
           }
         }
-        
+  
+        // Add retry button for completed/failed/cancelled tasks
+        const status = (task.status || '').toLowerCase();
+        let controls = `<button class="button" onclick="showOutput('${task.id}', \`${task.goal}\`, \`${task.output.replace(/`/g, '\\`')}\`)">Show Output</button>`;
+        if (status.includes('failed') || status.includes('completed') || status.includes('cancelled')) {
+          controls += ` <button class="button button-secondary" data-retry="${task.id}">Retry</button>`;
+        }
+  
         taskItem.innerHTML = `
           <div class="task-header">
             <div class="task-goal">${task.goal}</div>
@@ -170,9 +216,27 @@ function loadTaskHistory() {
           <div class="task-meta">
             <div>Executed: ${new Date(task.timestamp).toLocaleString()}</div>
             <div>Duration: ${duration}</div>
-            <button class="button" onclick="showOutput('${task.id}', \`${task.goal}\`, \`${task.output.replace(/`/g, '\\`')}\`)">Show Output</button>
+            ${controls}
           </div>
         `;
+        setTimeout(() => {
+          const retryBtn = taskItem.querySelector('[data-retry]');
+          if (retryBtn) {
+            retryBtn.onclick = function() {
+              if (confirm('Retry this task?')) {
+                fetch(`/api/task/${task.id}/retry`, { method: 'POST' })
+                  .then(resp => resp.json())
+                  .then(data => {
+                    if (data && data.id) {
+                      window.location.href = `/task/${data.id}`;
+                    } else {
+                      alert('Failed to retry task.');
+                    }
+                  });
+              }
+            };
+          }
+        }, 0);
         historyList.appendChild(taskItem);
       });
     })
@@ -306,25 +370,122 @@ function updateSystemStatus() {
 document.addEventListener('DOMContentLoaded', function() {
   // Connect WebSocket
   connectWebSocket();
-  
+
   // Setup log streaming
   setupLogStream();
-  
+
   // Load active tasks
   loadActiveTasks();
-  
+
   // Load task history
   loadTaskHistory();
-  
+
   // Update system status
   updateSystemStatus();
-  
+
+  // Batch/Template Task Submission
+  const goalForm = document.querySelector('.goal-form');
+  const goalTextarea = document.getElementById('goal');
+  if (goalForm && goalTextarea) {
+    // Add template buttons
+    const templates = [
+      "Install Docker",
+      "Create a Python script to analyze logs",
+      "Show disk usage and free memory",
+      "List all running processes",
+      "Update all system packages"
+    ];
+    const templateBar = document.createElement('div');
+    templateBar.style.marginBottom = '8px';
+    templateBar.innerHTML = templates.map(t =>
+      `<button type="button" class="button button-secondary" style="margin-right:6px; margin-bottom:6px;" data-template="${t}">${t}</button>`
+    ).join('');
+    goalForm.insertBefore(templateBar, goalForm.firstChild);
+    templateBar.querySelectorAll('button[data-template]').forEach(btn => {
+      btn.addEventListener('click', function() {
+        if (goalTextarea.value && !goalTextarea.value.endsWith('\n')) goalTextarea.value += '\n';
+        goalTextarea.value += this.getAttribute('data-template');
+        goalTextarea.focus();
+      });
+    });
+
+    // Add feedback area
+    let feedback = document.createElement('div');
+    feedback.id = 'goal-feedback';
+    feedback.style.margin = '10px 0';
+    feedback.style.color = '#dc3545';
+    goalForm.appendChild(feedback);
+
+    goalForm.addEventListener('submit', function(e) {
+      e.preventDefault();
+      feedback.textContent = '';
+      const goalsRaw = goalTextarea.value.trim();
+      if (!goalsRaw) {
+        feedback.textContent = 'Please enter at least one goal.';
+        return;
+      }
+      const goals = goalsRaw.split('\n').map(g => g.trim()).filter(Boolean);
+      if (goals.length === 0) {
+        feedback.textContent = 'Please enter at least one goal.';
+        return;
+      }
+      feedback.style.color = '#0066cc';
+      feedback.textContent = 'Submitting...';
+      let createdTasks = [];
+      let errors = [];
+      let completed = 0;
+
+      // Submit each goal as a separate task
+      goals.forEach((goal, idx) => {
+        fetch('/api/goal', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: goal })
+        })
+        .then(resp => resp.json())
+        .then(data => {
+          if (data && data.id) {
+            createdTasks.push(data.id);
+          } else {
+            errors.push(data && data.error ? data.error : 'Unknown error');
+          }
+        })
+        .catch(err => {
+          errors.push(err.message || 'Network error');
+        })
+        .finally(() => {
+          completed++;
+          if (completed === goals.length) {
+            if (createdTasks.length > 0) {
+              feedback.style.color = '#28a745';
+              if (createdTasks.length === 1) {
+                feedback.innerHTML = 'Task created! Redirecting...';
+                setTimeout(() => {
+                  window.location.href = `/task/${createdTasks[0]}`;
+                }, 800);
+              } else {
+                feedback.innerHTML = 'Tasks created:<br>' +
+                  createdTasks.map(id => `<a href="/task/${id}" class="button" style="margin:4px 0;display:inline-block;">View Task ${id}</a>`).join(' ');
+              }
+              goalTextarea.value = '';
+              loadActiveTasks();
+            }
+            if (errors.length > 0) {
+              feedback.style.color = '#dc3545';
+              feedback.innerHTML += '<br>' + errors.map(e => `<div>${e}</div>`).join('');
+            }
+          }
+        });
+      });
+    });
+  }
+
   // Check if we're on a task detail page
   const taskId = document.getElementById('task-id')?.value;
   if (taskId) {
     loadTaskDetails(taskId);
   }
-  
+
   // Refresh data periodically
   setInterval(function() {
     loadActiveTasks();

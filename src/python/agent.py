@@ -1652,6 +1652,25 @@ async def cancel_task(task_id: str):
     })
     
     return {"success": True, "message": "Task cancelled"}
+@app.post("/api/task/{task_id}/retry")
+async def retry_task(task_id: str):
+    # Get the original task info
+    db_info = get_task_info(task_id)
+    if not db_info:
+        return JSONResponse(
+            status_code=404,
+            content={"error": f"Task {task_id} not found"}
+        )
+    # Only allow retry if not running
+    if task_id in active_tasks and active_tasks[task_id].get("status", "").startswith("Running"):
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Task is still running and cannot be retried."}
+        )
+    # Start a new task with the same goal
+    goal = db_info["goal"]
+    result = iterate(goal)
+    return result
 
 @app.get("/api/tasks")
 async def get_tasks():
