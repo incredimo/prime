@@ -26,6 +26,14 @@ lazy_static! {
     ).expect("Failed to compile fallback shell block regex");
 }
 
+/// Holds the result of a single command execution
+pub struct CommandExecutionResult {
+    pub command: String,
+    pub exit_code: i32,
+    pub output: String,
+    pub success: bool,
+}
+
 /// Represents a session with the Prime assistant
 pub struct PrimeSession {
     // Base paths
@@ -141,22 +149,42 @@ impl PrimeSession {
         Ok(file_path)
     }
     
-    /// Generate a response from Prime
-    pub fn generate_prime_response(&self) -> Result<String> {
-        // Build context from recent messages
-        let context = self.build_context(15)?;
-        
-        // Add a hint to generate as Prime
-        let prompt = format!("{}\n# Prime Response\n", context);
-        
+    /// Generate a response from Prime using the LLM.
+    ///
+    /// `current_turn_prompt`: The specific prompt for this turn (e.g., user input or error correction details).
+    /// `is_error_correction_turn`: True if this is a follow-up to correct previous errors.
+    pub fn generate_prime_response(&self, current_turn_prompt: &str, is_error_correction_turn: bool) -> Result<String> {
+        let mut ollama_prompt_payload = String::new();
+
+        // 1. System Instructions
+        ollama_prompt_payload.push_str(&self.get_system_prompt()?);
+        ollama_prompt_payload.push_str("\n\n");
+
+        // 2. Recent Conversation History (if any)
+        let history_limit = 10; // Number of past messages to include
+        let conversation_history = self.get_full_conversation_history_prompt(history_limit)?;
+        if !conversation_history.is_empty() {
+            ollama_prompt_payload.push_str("## Recent Conversation History:\n");
+            ollama_prompt_payload.push_str(&conversation_history);
+        }
+
+        // 3. The Current Task/Prompt for the LLM
+        if is_error_correction_turn {
+            ollama_prompt_payload.push_str("## Error Correction Task:\n");
+        } else {
+            ollama_prompt_payload.push_str("## Current User Request:\n");
+        }
+        ollama_prompt_payload.push_str(current_turn_prompt);
+        ollama_prompt_payload.push_str("\n\n# Prime Response:\n"); // Cue for LLM's response
+
         // Call Ollama API
         let response = self.client.post(&self.ollama_api_url)
             .json(&json!({
                 "model": self.ollama_model,
-                "prompt": prompt,
+                "prompt": ollama_prompt_payload,
                 "stream": false,
                 "options": {
-                    "temperature": 0.7,
+                    "temperature": 0.5, // Slightly lower for more deterministic corrections
                     "top_p": 0.9
                 }
             }))
@@ -176,7 +204,7 @@ impl PrimeSession {
             .context("Failed to parse Ollama API response")?;
         
         let generated_text = response_json["response"].as_str()
-            .ok_or_else(|| anyhow::anyhow!("Invalid Ollama response format"))?
+            .ok_or_else(|| anyhow::anyhow!("Invalid Ollama response format: 'response' field missing or not a string"))?
             .trim()
             .to_string();
         
@@ -186,20 +214,16 @@ impl PrimeSession {
         Ok(generated_text)
     }
     
-    /// Build the context from recent messages
-    fn build_context(&self, limit: usize) -> Result<String> {
-        // Include system prompt
-        let mut context = self.get_system_prompt()?;
-        context.push_str("\n\n");
-        
+    /// Get a string representation of the recent conversation history.
+    fn get_full_conversation_history_prompt(&self, limit: usize) -> Result<String> {
+        let mut context_str = String::new();
         // Get messages
         let messages = self.get_messages(Some(limit))?;
         for message in messages {
-            context.push_str(&message.content);
-            context.push_str("\n\n");
+            context_str.push_str(&message.content); // These already have headers like "# User Message"
+            context_str.push_str("\n\n");
         }
-        
-        Ok(context)
+        Ok(context_str)
     }
     
     /// Get system prompt for Prime
@@ -248,61 +272,52 @@ The following represents your current memory about the user's system:
     }
     
     /// Process any commands in Prime's response
-    pub fn process_commands(&self, response: &str) -> Result<()> {
-        // First try to match Pandoc attributed blocks
+    pub fn process_commands(&self, response: &str) -> Result<Vec<CommandExecutionResult>> {
+        let mut results = Vec::new();
         let mut found_commands = false;
-        
+
+        // Helper closure to execute and record a command
+        let execute_and_record = |command_str: &str, results_vec: &mut Vec<CommandExecutionResult>| -> Result<()> {
+            if command_str.is_empty() {
+                return Ok(());
+            }
+            // Logged by CommandProcessor now
+            // println!("Executing command: {}", command_str);
+            let (exit_code, output) = self.command_processor.execute_command(command_str)?;
+            self.add_system_message(command_str, exit_code, &output)?;
+            results_vec.push(CommandExecutionResult {
+                command: command_str.to_string(),
+                exit_code,
+                output,
+                success: exit_code == 0,
+            });
+            Ok(())
+        };
+
+        // First try to match Pandoc attributed blocks
         // Try Pandoc format first
         for cap in PANDOC_RE.captures_iter(response) {
             found_commands = true;
-            
-            // Get the command from capture group 1
-            let command = match cap.get(1) {
-                Some(cmd) => cmd.as_str().trim(),
-                None => continue, // Skip if we didn't capture the command
-            };
-            
-            // Skip empty commands
-            if command.is_empty() {
-                continue;
+            if let Some(cmd_match) = cap.get(1) {
+                execute_and_record(cmd_match.as_str().trim(), &mut results)?;
             }
-            
-            // Debug output
-            println!("Executing Pandoc command: {}", command);
-            
-            // Execute command
-            let (exit_code, output) = self.command_processor.execute_command(command)?;
-            
-            // Save output as system message
-            self.add_system_message(command, exit_code, &output)?;
         }
         
         // If no Pandoc blocks found, fall back to standard blocks
         if !found_commands {
             for cap in FALLBACK_RE.captures_iter(response) {
-                // Get the command from capture group 1
-                let command = match cap.get(1) {
-                    Some(cmd) => cmd.as_str().trim(),
-                    None => continue, // Skip if we didn't capture the command
-                };
-                
-                // Skip empty commands
-                if command.is_empty() {
-                    continue;
+                // found_commands = true; // This assignment is redundant if the loop is entered.
+                if let Some(cmd_match) = cap.get(1) {
+                    execute_and_record(cmd_match.as_str().trim(), &mut results)?;
                 }
-                
-                // Debug output
-                println!("Executing fallback command: {}", command);
-                
-                // Execute command
-                let (exit_code, output) = self.command_processor.execute_command(command)?;
-                
-                // Save output as system message
-                self.add_system_message(command, exit_code, &output)?;
             }
         }
         
-        Ok(())
+        // If !found_commands, results will be empty.
+        // The caller (Prime::process_user_input) checks if results.is_empty()
+        // to determine if the LLM provided any executable commands.
+
+        Ok(results)
     }
     
     /// Get list of messages in the session

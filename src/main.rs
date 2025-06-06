@@ -2,7 +2,6 @@
 // Entry point for Prime terminal assistant
 
 use std::env;
-use std::path::PathBuf;
 use std::process;
 use std::sync::Arc;
 
@@ -21,17 +20,25 @@ const APP_NAME: &str = "Prime";
 const VERSION: &str = "1.0.0";
 
 fn main() -> Result<()> {
+    println!(); // Start with a newline for spacing
+    let bar_char = "─";
+    let top_bar = bar_char.repeat(70).bright_blue();
+
     // Print banner
-    println!("\n{}", format!("┌──────────────────────────────┐").bright_blue());
-    println!("{}", format!("│ {} v{} │", APP_NAME, VERSION).bright_blue());
-    println!("{}", format!("│ Terminal Assistant            │").bright_blue());
-    println!("{}", format!("└──────────────────────────────┘").bright_blue());
-    
+    println!("{}", top_bar);
+    println!("  {} {} {} {}",
+        APP_NAME.bright_blue().bold(),
+        format!("v{}", VERSION).dimmed(),
+        "|".bright_black(), // Dimmed separator
+        "Your AI-Powered Terminal Companion".dimmed()
+    );
+    println!("{}\n", top_bar);
+
     // Initialize Prime
     let prime = match init_prime() {
         Ok(prime) => prime,
         Err(e) => {
-            eprintln!("{} {}", "✗".red(), format!("Initialization error: {}", e).red());
+            eprintln!("{} {}", "[ERROR]".red().bold(), format!("Initialization error: {}", e).red());
             process::exit(1);
         }
     };
@@ -39,17 +46,18 @@ fn main() -> Result<()> {
     // Run Prime's main loop
     match prime.run() {
         Ok(_) => {
-            println!("{} {}", "✓".green(), "Prime session ended successfully".green());
+            println!("{} {}", "[OK]".green().bold(), "Prime session ended successfully".green());
             Ok(())
         },
         Err(e) => {
-            eprintln!("{} {}", "✗".red(), format!("Runtime error: {}", e).red());
+            eprintln!("{} {}", "[ERROR]".red().bold(), format!("Runtime error: {}", e).red());
             process::exit(1);
         }
     }
 }
 
 fn init_prime() -> Result<Prime> {
+    let bar_char = "─";
     // Get configuration from environment variables
     let ollama_model = env::var("OLLAMA_MODEL").unwrap_or_else(|_| "gemma3:latest".to_string());
     let ollama_api = env::var("OLLAMA_API").unwrap_or_else(|_| "http://localhost:11434".to_string());
@@ -59,9 +67,10 @@ fn init_prime() -> Result<Prime> {
         .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?
         .join(".prime");
     
-    println!("{} Using model: {}", "•".blue(), ollama_model);
-    println!("{} API endpoint: {}", "•".blue(), ollama_api);
-    println!("{} Data directory: {}", "•".blue(), base_dir.display());
+    println!("  {} {:<18} {}", ">".dimmed(), "Using model:".bold(), ollama_model.cyan());
+    println!("  {} {:<18} {}", ">".dimmed(), "API endpoint:".bold(), ollama_api.cyan());
+    println!("  {} {:<18} {}", ">".dimmed(), "Data directory:".bold(), base_dir.display().to_string().cyan());
+    println!("{}\n", bar_char.repeat(70).bright_black()); // Separator
     
     // Initialize session
     let session = PrimeSession::new(base_dir, &ollama_model, &ollama_api)?;
@@ -78,13 +87,13 @@ pub struct Prime {
 
 impl Prime {
     pub fn run(&self) -> Result<()> {
-        println!("\n{} Type your requests below. Type 'exit' to quit.", "•".blue());
+        println!("Type your requests below. Type {} or {} to quit.", "exit".bold().green(), "!exit".bold().green());
         
         let mut editor = DefaultEditor::new()?;
         
         loop {
             // Display prompt
-            let prompt = format!("{} ", "prime>".bright_cyan());
+            let prompt = format!("{} {} ", APP_NAME.bright_cyan().bold(), ">".bright_black());
             
             // Read user input
             match editor.readline(&prompt) {
@@ -93,7 +102,7 @@ impl Prime {
                     
                     // Check for exit command
                     if input.eq_ignore_ascii_case("exit") || input.eq_ignore_ascii_case("quit") {
-                        println!("Goodbye!");
+                        println!("{}", "Exiting Prime...".dimmed());
                         break;
                     }
                     
@@ -107,7 +116,7 @@ impl Prime {
                                 continue;
                             },
                             Err(e) => {
-                                eprintln!("{} {}", "✗".red(), format!("Command error: {}", e).red());
+                                eprintln!("{} {}", "[ERROR]".red().bold(), format!("Command error: {}", e).red());
                                 continue;
                             }
                         }
@@ -115,7 +124,7 @@ impl Prime {
                     
                     // Process user input
                     if let Err(e) = self.process_user_input(input) {
-                        eprintln!("{} {}", "✗".red(), format!("Error: {}", e).red());
+                        eprintln!("{} {}", "[ERROR]".red().bold(), format!("Error processing input: {}", e).red());
                     }
                 },
                 Err(ReadlineError::Interrupted) => {
@@ -126,7 +135,7 @@ impl Prime {
                     break;
                 },
                 Err(err) => {
-                    eprintln!("{} {}", "✗".red(), format!("Input error: {}", err).red());
+                    eprintln!("{} {}", "[ERROR]".red().bold(), format!("Input error: {}", err).red());
                     break;
                 }
             }
@@ -135,40 +144,103 @@ impl Prime {
         Ok(())
     }
     
-    fn process_user_input(&self, input: &str) -> Result<()> {
+    fn process_user_input(&self, initial_input: &str) -> Result<()> {
         // Skip empty input
-        if input.trim().is_empty() {
+        if initial_input.trim().is_empty() {
             return Ok(());
         }
         
         // Save user input as message
-        self.session.add_user_message(input)?;
-        
-        // Show thinking indicator
-        println!("{} {}", "⋯".bright_yellow(), "Thinking...".bright_yellow());
-        
-        // Generate AI response
-        match self.session.generate_prime_response() {
-            Ok(response) => {
-                // Print the AI response with a clear separator
-                println!("\n{}", format!("{}{}{}", "┌".bright_cyan(), "─".repeat(78).bright_cyan(), "┘".bright_cyan()));
-                println!("{} {}", "│".bright_cyan(), "Prime Response:".bright_cyan().bold());
-                println!("{}", format!("{}{}{}", "└".bright_cyan(), "─".repeat(78).bright_cyan(), "┘".bright_cyan()));
-                
-                // Print the response with syntax highlighting
-                let highlighted_response = self.highlight_response(&response);
-                print!("{}", highlighted_response);
-                
-                println!("\n{}", "─".repeat(80).bright_cyan());
-                
-                // Now process and execute any commands in the response
-                if let Err(e) = self.session.process_commands(&response) {
-                    eprintln!("{} {}", "✗".red(), format!("Command execution error: {}", e).red());
+        self.session.add_user_message(initial_input)?;
+
+        let mut current_llm_prompt = initial_input.to_string();
+        let mut recursion_depth = 0;
+        const MAX_RECURSION_DEPTH: usize = 3;
+
+        loop {
+            if recursion_depth >= MAX_RECURSION_DEPTH {
+                let err_msg = "Max recursion depth reached for this request.";
+                eprintln!("{} {}", "[ERROR]".red().bold(), err_msg.red());
+                self.session.add_system_message("InternalError", -1, err_msg)
+                    .context("Failed to log max recursion depth error")?;
+                return Err(anyhow::anyhow!(err_msg));
+            }
+
+            // Show thinking indicator
+            println!("{} Processing...", "[~]".dimmed());
+            
+            // Generate AI response using the current prompt (which might include error context)
+            let llm_response = match self.session.generate_prime_response(&current_llm_prompt, recursion_depth > 0) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("{} {}", "[ERROR]".red().bold(), format!("Failed to generate LLM response: {}", e).red());
+                    return Err(e);
                 }
-                
-                Ok(())
-            },
-            Err(e) => Err(anyhow::anyhow!("Failed to generate response: {}", e))
+            };
+    
+            // Print the AI response with a clear separator
+            // Note: The response is already saved to session history by generate_prime_response
+            let line_len: usize = 70;
+            let title = "Prime Response";
+            let title_bar = format!("{} {}", title.bright_cyan().bold(), "─".repeat(line_len.saturating_sub(title.len() + 1)).bright_cyan());
+            println!("\n{}", title_bar);
+            
+            // Print the response with syntax highlighting
+            let highlighted_response = self.highlight_response(&llm_response);
+            print!("{}", highlighted_response);
+            
+            println!("{}", "─".repeat(line_len).dimmed()); // Light footer
+            
+            // Process commands from the latest LLM response
+            // process_commands already saves system messages for each command output.
+            match self.session.process_commands(&llm_response) {
+                Ok(execution_results) => {
+                    if execution_results.is_empty() {
+                        println!("LLM provided no commands. Task considered complete or requires no action.");
+                        return Ok(());
+                    }
+
+                    let mut failed_commands_details = String::new();
+                    let mut all_succeeded = true;
+
+                    for result in execution_results {
+                        if !result.success {
+                            all_succeeded = false;
+                            failed_commands_details.push_str(&format!(
+                                "Command:\n```\n{}\n```\nFailed with exit code {}.\nOutput:\n```\n{}\n```\n\n",
+                                result.command, result.exit_code, result.output
+                            ));
+                        }
+                    }
+
+                    if all_succeeded {
+                        println!("All commands executed successfully.");
+                        return Ok(());
+                    } else {
+                        recursion_depth += 1;
+                        println!("{} Some commands failed. Attempting to correct (Attempt {}/{})...", "[WARN]".yellow().bold(), recursion_depth, MAX_RECURSION_DEPTH);
+                        
+                        let previous_llm_prompt_that_failed = current_llm_prompt.clone();
+                        current_llm_prompt = format!(
+                            "The previous set of commands resulted in errors. \
+                            Analyze the failures and provide corrected commands or an alternative approach. \
+                            Ensure commands are in the correct Pandoc-attributed markdown format for execution.\n\n\
+                            The prompt that led to the failed commands was:\n---\n{}\n---\n\n\
+                            Failed command details:\n\
+                            {}\
+                            Provide only the corrected commands or steps. If you believe the task is unachievable or requires clarification, please state that.",
+                            previous_llm_prompt_that_failed,
+                            failed_commands_details
+                        );
+                        // Loop continues
+                    }
+                },
+                Err(e) => {
+                    // This is an error in the command *processing* logic itself, not command execution.
+                    eprintln!("{} {}", "[ERROR]".red().bold(), format!("Internal error during command processing: {}", e).red());
+                    return Err(e);
+                }
+            }
         }
     }
     
@@ -176,30 +248,24 @@ impl Prime {
     fn highlight_response(&self, response: &str) -> String {
         let mut result = String::new();
         let mut in_code_block = false;
-        let mut code_block_content = String::new();
-        
+        // let mut code_block_content = String::new(); // code_block_content is unused
+
         for line in response.lines() {
             if line.starts_with("```") {
                 if in_code_block {
                     // End of code block
                     in_code_block = false;
-                    
-                    // Add highlighted code block
                     result.push_str(&format!("{}\n", line.bright_yellow()));
-                    
-                    // Reset code block content
-                    code_block_content.clear();
+                    // code_block_content.clear();
                 } else {
                     // Start of code block
                     in_code_block = true;
                     result.push_str(&format!("{}\n", line.bright_yellow()));
                 }
             } else if in_code_block {
-                // Inside code block - collect content for highlighting
-                code_block_content.push_str(line);
-                code_block_content.push('\n');
-                
-                // Highlight command content
+                // Inside code block
+                // code_block_content.push_str(line);
+                // code_block_content.push('\n');
                 result.push_str(&format!("{}\n", line.yellow()));
             } else {
                 // Regular text
@@ -207,7 +273,6 @@ impl Prime {
                 result.push('\n');
             }
         }
-        
         result
     }
     
@@ -215,19 +280,20 @@ impl Prime {
         let parts: Vec<&str> = cmd.splitn(2, ' ').collect();
         let command = parts[0].to_lowercase();
         let args = parts.get(1).map_or("", |s| s.trim());
+        let line_len: usize = 50;
         
         match command.as_str() {
             "memory" => {
                 // !memory [short|long|all]
                 let memory_type = if args.is_empty() { "all" } else { args };
+                let title = format!("Memory Content: {}", memory_type);
+                let title_bar = format!("{} {}", title.bright_magenta().bold(), "─".repeat(line_len.saturating_sub(title.len() + 1)).bright_magenta());
                 
                 match self.session.read_memory(Some(memory_type)) {
                     Ok(content) => {
-                        println!("\n{}", format!("{}{}{}", "┌".bright_magenta(), "─".repeat(20).bright_magenta(), "┐".bright_magenta()));
-                        println!("{} {} {}", "│".bright_magenta(), format!("Memory: {}", memory_type).bold(), "│".bright_magenta());
-                        println!("{}", format!("{}{}{}", "└".bright_magenta(), "─".repeat(20).bright_magenta(), "┘".bright_magenta()));
+                        println!("\n{}", title_bar);
                         println!("{}", content);
-                        println!("{}", "─".repeat(40).bright_magenta());
+                        println!("{}", "─".repeat(line_len).dimmed());
                     },
                     Err(e) => eprintln!("Error reading memory: {}", e),
                 }
@@ -241,17 +307,17 @@ impl Prime {
             },
             "list" => {
                 // List current session messages
+                let title = "Session Messages";
+                let title_bar = format!("{} {}", title.bright_blue().bold(), "─".repeat(line_len.saturating_sub(title.len() + 1)).bright_blue());
                 match self.session.list_messages() {
                     Ok(messages) => {
-                        println!("\n{}", format!("{}{}{}", "┌".bright_blue(), "─".repeat(20).bright_blue(), "┐".bright_blue()));
-                        println!("{} {} {}", "│".bright_blue(), "Session Messages".bold(), "│".bright_blue());
-                        println!("{}", format!("{}{}{}", "└".bright_blue(), "─".repeat(20).bright_blue(), "┘".bright_blue()));
+                        println!("\n{}", title_bar);
                         
                         for msg in messages {
                             println!("{}", msg);
                         }
                         
-                        println!("{}", "─".repeat(40).bright_blue());
+                        println!("{}", "─".repeat(line_len).dimmed());
                     },
                     Err(e) => eprintln!("Error listing messages: {}", e),
                 }
@@ -266,15 +332,15 @@ impl Prime {
                 }
                 
                 if let Ok(msg_num) = args.parse::<usize>() {
+                    let title = format!("Message #{}", msg_num);
+                    let title_bar = format!("{} {}", title.bright_blue().bold(), "─".repeat(line_len.saturating_sub(title.len() + 1)).bright_blue());
                     match self.session.read_message(msg_num) {
                         Ok(content) => {
-                            println!("\n{}", format!("{}{}{}", "┌".bright_blue(), "─".repeat(20).bright_blue(), "┐".bright_blue()));
-                            println!("{} {} {} {}", "│".bright_blue(), "Message".bold(), msg_num.to_string().bold(), "│".bright_blue());
-                            println!("{}", format!("{}{}{}", "└".bright_blue(), "─".repeat(20).bright_blue(), "┘".bright_blue()));
+                            println!("\n{}", title_bar);
                             
                             println!("{}", content);
                             
-                            println!("{}", "─".repeat(40).bright_blue());
+                            println!("{}", "─".repeat(line_len).dimmed());
                         },
                         Err(e) => eprintln!("Error reading message: {}", e),
                     }
@@ -285,25 +351,25 @@ impl Prime {
                 Ok(true)
             },
             "help" => {
-                println!("\n{}", "┌".bright_cyan().to_string() + &"─".bright_cyan().to_string().repeat(20) + &"┐".bright_cyan().to_string());
-                println!("{} {} {}", "│".bright_cyan(), "Prime Help".bold(), "│".bright_cyan());
-                println!("{}", format!("{}{}{}", "└".bright_cyan(), "─".repeat(20).bright_cyan(), "┘".bright_cyan()));
+                let title = "Prime Help";
+                let title_bar = format!("{} {}", title.bright_cyan().bold(), "─".repeat(line_len.saturating_sub(title.len() + 1)).bright_cyan());
+                println!("\n{}", title_bar);
                 
                 println!("Regular input: Send a request to Prime");
                 println!("\nSpecial commands:");
-                println!("  {}: View memory content", "!memory [short|long|all]".bright_white().bold());
-                println!("  {}: List session messages", "!list".bright_white().bold());
-                println!("  {}: Read a specific message", "!read <number>".bright_white().bold());
-                println!("  {}: Clear the screen", "!clear, !cls".bright_white().bold());
-                println!("  {}: Show this help", "!help".bright_white().bold());
-                println!("  {}: Exit Prime", "!exit, !quit".bright_white().bold());
+                println!("  {:<28} {}", "!memory [short|long|all]".green(), "View memory content");
+                println!("  {:<28} {}", "!list".green(), "List session messages");
+                println!("  {:<28} {}", "!read <number>".green(), "Read a specific message");
+                println!("  {:<28} {}", "!clear, !cls".green(), "Clear the screen");
+                println!("  {:<28} {}", "!help".green(), "Show this help");
+                println!("  {:<28} {}", "!exit, !quit".green(), "Exit Prime");
                 
-                println!("\n{}", "─".repeat(40).bright_cyan());
+                println!("{}", "─".repeat(line_len).dimmed());
                 
                 Ok(true)
             },
             "exit" | "quit" => {
-                println!("Goodbye!");
+                println!("{}", "Exiting Prime...".dimmed());
                 Ok(false) // Signal to exit
             },
             _ => {
