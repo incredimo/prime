@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::process;
 use std::sync::Arc;
 use anyhow::{Context as AnyhowContext, Result};
+use colored::Colorize;
 use console::Style;
 use rustyline::history::DefaultHistory;
 use rustyline::{Editor};
@@ -34,7 +35,7 @@ async fn main() -> Result<()> {
 
     let header_style = Style::new().white().bright().bold();
     let separator_style = Style::new().white().bright();
-    let version_style = Style::new().on_yellow();
+    let version_style = Style::new().on_yellow().on_bright();
     let info_style = Style::new().yellow();
     let bar_char = "━";
 
@@ -46,7 +47,7 @@ async fn main() -> Result<()> {
         separator_style.apply_to("│"),
         info_style.apply_to("PERSONAL RESOURCE INTELLIGENCE MANAGEMENT ENGINE")
     );
-    println!("{}\n", header_style.apply_to(bar_char.repeat(70)));
+    println!("{}", header_style.apply_to(bar_char.repeat(70)));
 
     let prime = match init_prime().await {
         Ok(prime) => prime,
@@ -82,7 +83,7 @@ async fn main() -> Result<()> {
 
 async fn init_prime() -> Result<Prime> {
     let bar_char = "━";
-    let ollama_model = env::var("OLLAMA_MODEL").unwrap_or_else(|_| "gemma:latest".to_string());
+    let ollama_model = env::var("OLLAMA_MODEL").unwrap_or_else(|_| "gemma3:latest".to_string());
     let ollama_api = env::var("OLLAMA_API").unwrap_or_else(|_| "http://localhost:11434".to_string());
     
     let prime_config_base_dir = dirs::home_dir()
@@ -91,36 +92,36 @@ async fn init_prime() -> Result<Prime> {
 
     let workspace_dir = env::current_dir().context("Failed to get current working directory")?;
 
-    let arrow_style = Style::new().black();
+    let arrow_style = Style::new().cyan().bright();
     let label_style = Style::new().bold();
     let value_style = Style::new().cyan();
     let sep_style = Style::new().black().bright();
 
     println!(
         "  {} {:<18} {}",
-        arrow_style.apply_to("»"),
-        label_style.apply_to("Using model:"),
+        arrow_style.apply_to("•"),
+        label_style.apply_to("model"),
         value_style.apply_to(&ollama_model)
     );
     println!(
         "  {} {:<18} {}",
-        arrow_style.apply_to("»"),
-        label_style.apply_to("API endpoint:"),
+        arrow_style.apply_to("•"),
+        label_style.apply_to("endpoint"),
         value_style.apply_to(&ollama_api)
     );
     println!(
         "  {} {:<18} {}",
-        arrow_style.apply_to("»"),
-        label_style.apply_to("Config dir:"),
+        arrow_style.apply_to("•"),
+        label_style.apply_to("configuration"),
         value_style.apply_to(&prime_config_base_dir.display().to_string())
     );
     println!(
         "  {} {:<18} {}",
-        arrow_style.apply_to("»"),
-        label_style.apply_to("Workspace:"),
+        arrow_style.apply_to("•"),
+        label_style.apply_to("workspace"),
         value_style.apply_to(&workspace_dir.display().to_string())
     );
-    println!("{}\n", sep_style.apply_to(bar_char.repeat(70)));
+    println!("{}", sep_style.apply_to(bar_char.repeat(70)));
 
     let session = PrimeSession::new(workspace_dir.clone(), &ollama_model, &ollama_api)?;
     Ok(Prime { session: Arc::new(session), workspace_dir })
@@ -134,18 +135,14 @@ pub struct Prime {
 
 impl Prime {
     pub async fn run(&self) -> Result<()> {
-        println!(
-            "Type your requests below. Type {} or {} to quit.",
-            STYLER.success_style("exit"),
-            STYLER.success_style("!exit")
-        );
+ 
 
         let mut editor = Editor::<PrimeHelper, DefaultHistory>::new()?;
         let prime_helper = PrimeHelper::new(APP_NAME);
         editor.set_helper(Some(prime_helper));
 
         loop {
-            let prompt = format!("{} » ", APP_NAME);
+            let prompt = "» ";
             match editor.readline(&prompt) {
                 Ok(line) => {
                     editor.add_history_entry(line.as_str())?;
