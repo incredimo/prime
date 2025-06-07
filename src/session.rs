@@ -347,7 +347,7 @@ The following represents your current memory about the user's system:
             results_vec.push(CommandExecutionResult {
                 command: command_str.to_string(),
                 exit_code,
-                output,
+                output: output.to_string(), // Explicitly convert to String
                 success: exit_code == 0,
             });
             Ok(())
