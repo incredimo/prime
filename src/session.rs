@@ -152,12 +152,12 @@ impl PrimeSession {
         // Print command execution feedback
         if exit_code == 0 {
             println!("{} {}",
-                success_style.apply_to("▶"),
+                success_style.apply_to("✔"), // Using a checkmark for success
                 command_style.apply_to(command)
             );
         } else {
             println!("{} {} (exit code: {})",
-                error_style.apply_to("▶"),
+                error_style.apply_to("✖"), // Using an X for error
                 command_style.apply_to(command),
                 error_style.apply_to(exit_code.to_string())
             );
@@ -205,9 +205,9 @@ impl PrimeSession {
         // Setup spinner
         let spinner = ProgressBar::new_spinner();
         spinner.set_style(
-            ProgressStyle::with_template("{spinner} {msg}")
+            ProgressStyle::with_template("{spinner:.blue.bold} {msg}") // Added color and bold to spinner
                 .unwrap()
-                .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈")
+                .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏") // Using a different set of spinner characters
         );
         spinner.enable_steady_tick(Duration::from_millis(80));
         spinner.set_message("Thinking...");

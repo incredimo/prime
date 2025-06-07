@@ -29,7 +29,7 @@ async fn main() -> Result<()> {
     let header_style = Style::new().blue().bright().bold();
     let separator_style = Style::new().black().bright();
     let info_style = Style::new().black();
-    let bar_char = "─";
+    let bar_char = "━"; // Using a heavier bar character
     let top_bar = separator_style.apply_to(bar_char.repeat(70));
 
     // Print banner
@@ -37,7 +37,7 @@ async fn main() -> Result<()> {
     println!("  {} {} {} {}",
         header_style.apply_to(APP_NAME),
         info_style.apply_to(format!("v{}", VERSION)),
-        separator_style.apply_to("|"),
+        separator_style.apply_to("│"), // Using a vertical bar
         info_style.apply_to("Your AI-Powered Terminal Companion")
     );
     println!("{}\n", header_style.apply_to(bar_char.repeat(70)));
@@ -77,7 +77,7 @@ async fn main() -> Result<()> {
 }
 
 async fn init_prime() -> Result<Prime> {
-    let bar_char = "─";
+    let bar_char = "━"; // Using a heavier bar character
     // Get configuration from environment variables
     let ollama_model = env::var("OLLAMA_MODEL").unwrap_or_else(|_| "gemma3:latest".to_string());
     let ollama_api = env::var("OLLAMA_API").unwrap_or_else(|_| "http://localhost:11434".to_string());
@@ -93,21 +93,21 @@ async fn init_prime() -> Result<Prime> {
     let separator_style = Style::new().black().bright();
     
     println!("  {} {:<18} {}",
-        arrow_style.apply_to(">"),
+        arrow_style.apply_to("»"), // Using a different arrow
         label_style.apply_to("Using model:"),
         value_style.apply_to(&ollama_model)
     );
     println!("  {} {:<18} {}",
-        arrow_style.apply_to(">"),
+        arrow_style.apply_to("»"), // Using a different arrow
         label_style.apply_to("API endpoint:"),
         value_style.apply_to(&ollama_api)
     );
     println!("  {} {:<18} {}",
-        arrow_style.apply_to(">"),
+        arrow_style.apply_to("»"), // Using a different arrow
         label_style.apply_to("Data directory:"),
         value_style.apply_to(&base_dir.display().to_string())
     );
-    println!("{}\n", separator_style.apply_to("─".repeat(70)));
+    println!("{}\n", separator_style.apply_to(bar_char.repeat(70)));
     
     // Initialize session
     let session = PrimeSession::new(base_dir, &ollama_model, &ollama_api)?;
@@ -138,7 +138,7 @@ impl Prime {
             let arrow_style = Style::new().black().bright();
             let prompt = format!("{} {} ",
                 prompt_style.apply_to(APP_NAME),
-                arrow_style.apply_to(">")
+                arrow_style.apply_to("»") // Using a different arrow
             );
             
             // Read user input
@@ -230,15 +230,7 @@ impl Prime {
             }
 
             // Show thinking indicator
-            // Show thinking indicator with spinner
-            let spinner = ProgressBar::new_spinner();
-            spinner.set_style(
-                ProgressStyle::with_template("{spinner} {msg}")
-                    .unwrap()
-                    .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈")
-            );
-            spinner.enable_steady_tick(Duration::from_millis(80));
-            spinner.set_message("Processing request...");
+            // Spinner is now handled within session.generate_prime_response_stream
             
             // Generate AI response using the current prompt (which might include error context)
             let llm_response = match self.session.generate_prime_response_stream(&current_llm_prompt, recursion_depth > 0).await {
@@ -256,7 +248,7 @@ impl Prime {
             // Response is already displayed in real-time by generate_prime_response_stream
             // Just add footer separator
             let separator_style = Style::new().black().bright();
-            println!("\n{}", separator_style.apply_to("─".repeat(70)));
+            println!("\n{}", separator_style.apply_to("━".repeat(70))); // Using a heavier bar character
             
             // Process commands from the latest LLM response
             // process_commands already saves system messages for each command output.
@@ -364,7 +356,7 @@ impl Prime {
                 let title_style = Style::new().magenta().bold();
                 let title_bar = format!("{} {}",
                     title_style.apply_to(&title),
-                    title_style.apply_to("─".repeat(line_len.saturating_sub(title.len() + 1)))
+                    title_style.apply_to("━".repeat(line_len.saturating_sub(title.len() + 1))) // Using a heavier bar character
                 );
                 
                 match self.session.read_memory(Some(memory_type)) {
@@ -372,7 +364,7 @@ impl Prime {
                         println!("\n{}", title_bar);
                         println!("{}", content);
                         let separator_style = Style::new().dim();
-                        println!("{}", separator_style.apply_to("─".repeat(line_len)));
+                        println!("{}", separator_style.apply_to("━".repeat(line_len))); // Using a heavier bar character
                     },
                     Err(e) => {
                         let error_style = Style::new().red();
@@ -393,7 +385,7 @@ impl Prime {
                 let title_style = Style::new().blue().bright().bold();
                 let title_bar = format!("{} {}",
                     title_style.apply_to(&title),
-                    title_style.apply_to("─".repeat(line_len.saturating_sub(title.len() + 1)))
+                    title_style.apply_to("━".repeat(line_len.saturating_sub(title.len() + 1))) // Using a heavier bar character
                 );
                 match self.session.list_messages() {
                     Ok(messages) => {
@@ -404,7 +396,7 @@ impl Prime {
                         }
                         
                         let separator_style = Style::new().dim();
-                        println!("{}", separator_style.apply_to("─".repeat(line_len)));
+                        println!("{}", separator_style.apply_to("━".repeat(line_len))); // Using a heavier bar character
                     },
                     Err(e) => {
                         let error_style = Style::new().red();
@@ -426,7 +418,7 @@ impl Prime {
                     let title_style = Style::new().blue().bright().bold();
                     let title_bar = format!("{} {}",
                         title_style.apply_to(&title),
-                        title_style.apply_to("─".repeat(line_len.saturating_sub(title.len() + 1)))
+                        title_style.apply_to("━".repeat(line_len.saturating_sub(title.len() + 1))) // Using a heavier bar character
                     );
                     match self.session.read_message(msg_num) {
                         Ok(content) => {
@@ -435,7 +427,7 @@ impl Prime {
                             println!("{}", content);
                             
                             let separator_style = Style::new().dim();
-                            println!("{}", separator_style.apply_to("─".repeat(line_len)));
+                            println!("{}", separator_style.apply_to("━".repeat(line_len))); // Using a heavier bar character
                         },
                         Err(e) => {
                             let error_style = Style::new().red();
@@ -454,7 +446,7 @@ impl Prime {
                 let success_style = Style::new().green();
                 let title_bar = format!("{} {}",
                     title_style.apply_to(&title),
-                    title_style.apply_to("─".repeat(line_len.saturating_sub(title.len() + 1)))
+                    title_style.apply_to("━".repeat(line_len.saturating_sub(title.len() + 1))) // Using a heavier bar character
                 );
                 println!("\n{}", title_bar);
                 
@@ -468,7 +460,7 @@ impl Prime {
                 println!("  {:<28} {}", success_style.apply_to("!exit, !quit"), "Exit Prime");
                 
                 let separator_style = Style::new().black();
-                println!("{}", separator_style.apply_to("─".repeat(line_len)));
+                println!("{}", separator_style.apply_to("━".repeat(line_len))); // Using a heavier bar character
                 
                 Ok(true)
             },
