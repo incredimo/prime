@@ -1,16 +1,20 @@
 // session.rs
 // Session management and message handling for Prime
 use std::fs;
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context as AnyhowContext, Result};
 use chrono;
+use console::Style;
+use futures::StreamExt;
+use indicatif::{ProgressBar, ProgressStyle};
 use lazy_static::lazy_static;
 use regex::Regex;
-use reqwest::blocking::Client;
-use serde_json::{json, Value};
+use reqwest::Client;
+use serde_json::json;
 
 use crate::commands::CommandProcessor;
 use crate::memory::MemoryManager;
@@ -83,6 +87,7 @@ impl PrimeSession {
         // Create HTTP client
         let client = Client::builder()
             .timeout(Duration::from_secs(60))
+            .gzip(true)
             .build()
             .context("Failed to create HTTP client")?;
         
@@ -140,20 +145,40 @@ impl PrimeSession {
         let file_path = self.session_dir.join(&file_name);
         
         let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+        let success_style = Style::new().green();
+        let error_style = Style::new().red();
+        let command_style = Style::new().cyan();
+        
+        // Print command execution feedback
+        if exit_code == 0 {
+            println!("{} {}",
+                success_style.apply_to("▶"),
+                command_style.apply_to(command)
+            );
+        } else {
+            println!("{} {} (exit code: {})",
+                error_style.apply_to("▶"),
+                command_style.apply_to(command),
+                error_style.apply_to(exit_code.to_string())
+            );
+        }
+        
+        // Format message content with status
+        let status_text = if exit_code == 0 { "Success" } else { "Error" };
         let message_content = format!(
-            "# System Output\nTimestamp: {}\nCommand: {}\nExit Code: {}\n\n```\n{}\n```",
-            timestamp, command, exit_code, output
+            "# System Output\nTimestamp: {}\nStatus: {}\nCommand: {}\nExit Code: {}\n\n```\n{}\n```",
+            timestamp, status_text, command, exit_code, output
         );
         
         fs::write(&file_path, message_content)?;
         Ok(file_path)
     }
     
-    /// Generate a response from Prime using the LLM.
+    /// Generate a streamed response from Prime using the LLM, with a spinner while waiting.
     ///
     /// `current_turn_prompt`: The specific prompt for this turn (e.g., user input or error correction details).
     /// `is_error_correction_turn`: True if this is a follow-up to correct previous errors.
-    pub fn generate_prime_response(&self, current_turn_prompt: &str, is_error_correction_turn: bool) -> Result<String> {
+    pub async fn generate_prime_response_stream(&self, current_turn_prompt: &str, is_error_correction_turn: bool) -> Result<String> {
         let mut ollama_prompt_payload = String::new();
 
         // 1. System Instructions
@@ -177,41 +202,74 @@ impl PrimeSession {
         ollama_prompt_payload.push_str(current_turn_prompt);
         ollama_prompt_payload.push_str("\n\n# Prime Response:\n"); // Cue for LLM's response
 
-        // Call Ollama API
+        // Setup spinner
+        let spinner = ProgressBar::new_spinner();
+        spinner.set_style(
+            ProgressStyle::with_template("{spinner} {msg}")
+                .unwrap()
+                .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈")
+        );
+        spinner.enable_steady_tick(Duration::from_millis(80));
+        spinner.set_message("Thinking...");
+
+        // Call Ollama API with streaming
         let response = self.client.post(&self.ollama_api_url)
             .json(&json!({
                 "model": self.ollama_model,
                 "prompt": ollama_prompt_payload,
-                "stream": false,
+                "stream": true,
                 "options": {
-                    "temperature": 0.5, // Slightly lower for more deterministic corrections
+                    "temperature": 0.5,
                     "top_p": 0.9
                 }
             }))
             .send()
+            .await
             .context("Failed to send request to Ollama API")?;
-        
+
         if !response.status().is_success() {
             return Err(anyhow::anyhow!(
-                "Ollama API error ({}): {}", 
-                response.status(), 
-                response.text().unwrap_or_default()
+                "Ollama API error ({}): {}",
+                response.status(),
+                response.text().await.unwrap_or_default()
             ));
         }
+
+        // Process the byte stream
+        let mut full_response = String::new();
+        let mut stream = response.bytes_stream();
         
-        // Parse response
-        let response_json: Value = response.json()
-            .context("Failed to parse Ollama API response")?;
-        
-        let generated_text = response_json["response"].as_str()
-            .ok_or_else(|| anyhow::anyhow!("Invalid Ollama response format: 'response' field missing or not a string"))?
-            .trim()
-            .to_string();
-        
+        while let Some(chunk) = stream.next().await {
+            let bytes = chunk.context("Stream error")?;
+            
+            // Process newline-delimited JSON responses
+            for piece in std::str::from_utf8(&bytes)?.split('\n') {
+                if piece.trim().is_empty() { continue }
+                if let Ok(obj) = serde_json::from_str::<serde_json::Value>(piece) {
+                    if let Some(tok) = obj.get("response").and_then(|v| v.as_str()) {
+                        // First real token? Stop spinner
+                        spinner.finish_and_clear();
+                        
+                        // Print token immediately
+                        print!("{}", tok);
+                        io::stdout().flush().unwrap();
+                        full_response.push_str(tok);
+                    }
+                }
+            }
+        }
+
+        // Clean up & newline
+        println!();
+
         // Save the AI response
-        self.add_prime_message(&generated_text)?;
+        self.add_prime_message(&full_response)?;
         
-        Ok(generated_text)
+        // Print completion message
+        let status_style = Style::new().green();
+        println!("\n{}", status_style.apply_to("✓ Response complete"));
+        
+        Ok(full_response)
     }
     
     /// Get a string representation of the recent conversation history.
@@ -281,8 +339,9 @@ The following represents your current memory about the user's system:
             if command_str.is_empty() {
                 return Ok(());
             }
-            // Logged by CommandProcessor now
-            // println!("Executing command: {}", command_str);
+            // Command output will be handled by add_system_message
+            let command_style = Style::new().cyan();
+            println!("\n{}", command_style.apply_to("Executing command:"));
             let (exit_code, output) = self.command_processor.execute_command(command_str)?;
             self.add_system_message(command_str, exit_code, &output)?;
             results_vec.push(CommandExecutionResult {
