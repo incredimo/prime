@@ -66,10 +66,10 @@ if (-not (Test-Path $releaseFolder)) {
 }
 
 # build for windows
-cargo build --release --bin moto --target x86_64-pc-windows-msvc --out-dir $releaseFolder
+cargo build --release --bin prime --target x86_64-pc-windows-msvc --out-dir $releaseFolder
 Write-Output "🔨 Successfully built Windows binary "
 # build for linux
-cargo build --release --bin moto --target x86_64-unknown-linux-gnu --out-dir $releaseFolder
+cargo build --release --bin prime --target x86_64-unknown-linux-gnu --out-dir $releaseFolder
 Write-Output "🔨 Successfully built Linux binary "
 
 
@@ -88,10 +88,10 @@ if ($local) {
     Write-Output "🏠 Running in local mode, building binaries for Windows and Linux..."
 
     # Build for Windows
-    cargo build --release --bin moto --target x86_64-pc-windows-msvc
+    cargo build --release --bin prime --target x86_64-pc-windows-msvc
 
     # Build for Linux
-    cargo build --release --bin moto --target x86_64-unknown-linux-gnu
+    cargo build --release --bin prime --target x86_64-unknown-linux-gnu
 
     # Create a new release
     $releaseId = New-RandomGuid
@@ -99,12 +99,12 @@ if ($local) {
     New-Item -ItemType Directory -Path $releasePath | Out-Null
 
     # Copy Windows binary to release directory
-    $windowsBinaryPath = "./target/x86_64-pc-windows-msvc/release/moto.exe"
-    Copy-Item -Path $windowsBinaryPath -Destination "$releasePath/moto-windows.exe"
+    $windowsBinaryPath = "./target/x86_64-pc-windows-msvc/release/prime.exe"
+    Copy-Item -Path $windowsBinaryPath -Destination "$releasePath/prime-windows.exe"
 
     # Copy Linux binary to release directory
-    $linuxBinaryPath = "./target/x86_64-unknown-linux-gnu/release/moto"
-    Copy-Item -Path $linuxBinaryPath -Destination "$releasePath/moto-linux"
+    $linuxBinaryPath = "./target/x86_64-unknown-linux-gnu/release/prime"
+    Copy-Item -Path $linuxBinaryPath -Destination "$releasePath/prime-linux"
 
     Write-Output "🎉 Release v$newVersion completed locally! Binaries are available in $releasePath"
     exit 0
