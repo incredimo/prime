@@ -1,46 +1,46 @@
+mod styling;
 use std::env;
-use std::io::Write;
+use std::io::{self, Write};
+use std::path::PathBuf;
 use std::process;
 use std::sync::Arc;
-use std::time::Duration;
-use anyhow::{Context as AnyhowContext, Result}; // Aliased anyhow::Context
+use anyhow::{Context as AnyhowContext, Result};
 use console::Style;
-use indicatif::{ProgressBar, ProgressStyle};
 use rustyline::history::DefaultHistory;
-// Removed rustyline imports for traits now implemented in terminal_ui.rs
-use rustyline::{DefaultEditor, Editor};
+use rustyline::{Editor};
 use rustyline::error::ReadlineError;
-// std::borrow::Cow might still be needed if other parts of rustyline API use it,
-// but not directly for PrimeHelper here. Let's keep it for now.
-use std::borrow::Cow;
-
 
 mod session;
 mod commands;
 mod memory;
-mod terminal_ui; // Added new module
+mod terminal_ui;
+mod config_utils;
 
-use session::PrimeSession;
-use terminal_ui::PrimeHelper; // Use PrimeHelper from the new module
+use session::{PrimeSession, ProcessedItemResult};
+use terminal_ui::PrimeHelper;
+use crate::styling::STYLER;
 
 const APP_NAME: &str = "prime";
 const VERSION: &str = "1.0.0";
-
-// PrimeHelper struct and its impls have been moved to src/terminal_ui.rs
+const BANNER: &str = r#"
+    [38;2;230;230;230m██[0m[38;2;230;230;230m██[0m[38;2;230;230;230m██[0m [38;2;230;230;230m██[0m[38;2;63;81;181m██[0m[38;2;33;150;243m██[0m   [38;2;3;169;244m██[0m [38;2;0;150;136m██[0m[38;2;76;175;80m██[0m[38;2;205;220;57m██[0m[38;2;255;193;7m██[0m   [38;2;255;152;0m██[0m[38;2;255;87;34m██[0m[38;2;244;67;54m██[0m 
+  [38;2;33;150;243m██[0m    [38;2;3;169;244m██[0m [38;2;0;150;136m██[0m    [38;2;76;175;80m██[0m [38;2;205;220;57m██[0m [38;2;255;193;7m██[0m  [38;2;255;152;0m██[0m  [38;2;255;87;34m██[0m [38;2;244;67;54m██[0m     
+  [38;2;230;230;230m██[0m[38;2;230;230;230m██[0m[38;2;63;81;181m██[0m   [38;2;33;150;243m██[0m[38;2;3;169;244m██[0m[38;2;0;150;136m██[0m   [38;2;76;175;80m██[0m [38;2;205;220;57m██[0m  [38;2;255;193;7m██[0m  [38;2;255;152;0m██[0m [38;2;255;87;34m██[0m[38;2;244;67;54m██[0m   
+  [38;2;63;81;181m██[0m       [38;2;33;150;243m██[0m    [38;2;3;169;244m██[0m [38;2;0;150;136m██[0m [38;2;76;175;80m██[0m  [38;2;205;220;57m██[0m  [38;2;255;193;7m██[0m [38;2;255;152;0m██[0m[38;2;255;87;34m██[0m[38;2;244;67;54m██[0m 
+"#;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    println!(); // Start with a newline for spacing
+    println!("{}", BANNER);
 
-    // Initialize banner styles
     let header_style = Style::new().blue().bright().bold();
     let separator_style = Style::new().black().bright();
     let info_style = Style::new().black();
     let bar_char = "━";
 
-    // Print banner
     println!("{}", header_style.apply_to(bar_char.repeat(70)));
-    println!("  {} {} {} {}",
+    println!(
+        "  {} {} {} {}",
         header_style.apply_to(APP_NAME),
         info_style.apply_to(format!("v{}", VERSION)),
         separator_style.apply_to("│"),
@@ -48,34 +48,32 @@ async fn main() -> Result<()> {
     );
     println!("{}\n", header_style.apply_to(bar_char.repeat(70)));
 
-    // Initialize Prime
     let prime = match init_prime().await {
         Ok(prime) => prime,
         Err(e) => {
-            let error_style = Style::new().red();
-            eprintln!("{} {}",
-                error_style.apply_to("[ERROR]"),
-                error_style.apply_to(format!("Initialization error: {}", e))
+            eprintln!(
+                "{} {}",
+                STYLER.error_style("[ERROR]"),
+                STYLER.error_style(format!("Initialization error: {}", e))
             );
             process::exit(1);
         }
     };
 
-    // Run main loop
     match prime.run().await {
         Ok(_) => {
-            let success_style = Style::new().green();
-            println!("{} {}",
-                success_style.apply_to("[OK]"),
-                success_style.apply_to("Prime session ended successfully")
+            println!(
+                "{} {}",
+                STYLER.success_style("[OK]"),
+                STYLER.success_style("Prime session ended successfully")
             );
             Ok(())
-        },
+        }
         Err(e) => {
-            let error_style = Style::new().red();
-            eprintln!("{} {}",
-                error_style.apply_to("[ERROR]"),
-                error_style.apply_to(format!("Runtime error: {}", e))
+            eprintln!(
+                "{} {}",
+                STYLER.error_style("[ERROR]"),
+                STYLER.error_style(format!("Runtime error: {}", e))
             );
             process::exit(1);
         }
@@ -84,67 +82,80 @@ async fn main() -> Result<()> {
 
 async fn init_prime() -> Result<Prime> {
     let bar_char = "━";
-    let ollama_model = env::var("OLLAMA_MODEL").unwrap_or_else(|_| "gemma3:latest".to_string());
+    let ollama_model = env::var("OLLAMA_MODEL").unwrap_or_else(|_| "gemma:latest".to_string());
     let ollama_api = env::var("OLLAMA_API").unwrap_or_else(|_| "http://localhost:11434".to_string());
-    let base_dir = dirs::home_dir()
+    
+    let prime_config_base_dir = dirs::home_dir()
         .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?
         .join(".prime");
+
+    let workspace_dir = env::current_dir().context("Failed to get current working directory")?;
 
     let arrow_style = Style::new().black();
     let label_style = Style::new().bold();
     let value_style = Style::new().cyan();
     let sep_style = Style::new().black().bright();
 
-    println!("  {} {:<18} {}",
+    println!(
+        "  {} {:<18} {}",
         arrow_style.apply_to("»"),
         label_style.apply_to("Using model:"),
         value_style.apply_to(&ollama_model)
     );
-    println!("  {} {:<18} {}",
+    println!(
+        "  {} {:<18} {}",
         arrow_style.apply_to("»"),
         label_style.apply_to("API endpoint:"),
         value_style.apply_to(&ollama_api)
     );
-    println!("  {} {:<18} {}",
+    println!(
+        "  {} {:<18} {}",
         arrow_style.apply_to("»"),
-        label_style.apply_to("Data directory:"),
-        value_style.apply_to(&base_dir.display().to_string())
+        label_style.apply_to("Config dir:"),
+        value_style.apply_to(&prime_config_base_dir.display().to_string())
+    );
+    println!(
+        "  {} {:<18} {}",
+        arrow_style.apply_to("»"),
+        label_style.apply_to("Workspace:"),
+        value_style.apply_to(&workspace_dir.display().to_string())
     );
     println!("{}\n", sep_style.apply_to(bar_char.repeat(70)));
 
-    let session = PrimeSession::new(base_dir, &ollama_model, &ollama_api)?;
-    Ok(Prime { session: Arc::new(session) })
+    let session = PrimeSession::new(workspace_dir.clone(), &ollama_model, &ollama_api)?;
+    Ok(Prime { session: Arc::new(session), workspace_dir })
 }
 
-/// Main Prime application
 pub struct Prime {
     session: Arc<PrimeSession>,
+    #[allow(dead_code)]
+    workspace_dir: PathBuf,
 }
 
 impl Prime {
     pub async fn run(&self) -> Result<()> {
-        let success_style = Style::new().green();
-        println!("Type your requests below. Type {} or {} to quit.",
-            success_style.apply_to("exit"),
-            success_style.apply_to("!exit")
+        println!(
+            "Type your requests below. Type {} or {} to quit.",
+            STYLER.success_style("exit"),
+            STYLER.success_style("!exit")
         );
 
-        let mut editor = Editor::< PrimeHelper, DefaultHistory>::new()?;
-        // Instantiate PrimeHelper from the terminal_ui module, passing APP_NAME
+        let mut editor = Editor::<PrimeHelper, DefaultHistory>::new()?;
         let prime_helper = PrimeHelper::new(APP_NAME);
         editor.set_helper(Some(prime_helper));
 
         loop {
-            // Pass the full desired prompt string to readline.
-            // The Highlighter will only apply color.
-            let full_prompt_str = format!("{} » ", APP_NAME);
-
-            match editor.readline(&full_prompt_str) {
+            let prompt = format!("{} » ", APP_NAME);
+            match editor.readline(&prompt) {
                 Ok(line) => {
+                    editor.add_history_entry(line.as_str())?;
+
                     let input = line.trim();
+                    if input.is_empty() {
+                        continue;
+                    }
                     if input.eq_ignore_ascii_case("exit") || input.eq_ignore_ascii_case("quit") {
-                        let info_style = Style::new().dim();
-                        println!("{}", info_style.apply_to("Exiting Prime..."));
+                        println!("{}", STYLER.info_style("Exiting Prime..."));
                         break;
                     }
                     if input.starts_with('!') {
@@ -153,21 +164,27 @@ impl Prime {
                         }
                         continue;
                     }
+
                     if let Err(e) = self.process_user_input(input).await {
-                        let error_style = Style::new().red();
-                        eprintln!("{} {}",
-                            error_style.apply_to("[ERROR]"),
-                            error_style.apply_to(format!("Error processing input: {}", e))
+                        eprintln!(
+                            "{} {}",
+                            STYLER.error_style("[ERROR]"),
+                            STYLER.error_style(format!("Error processing input: {}", e))
                         );
                     }
                 }
-                Err(ReadlineError::Interrupted) => println!("Interrupted. Type 'exit' to quit."),
-                Err(ReadlineError::Eof) => { println!("End of input. Goodbye!"); break; },
+                Err(ReadlineError::Interrupted) => {
+                    println!("{}", STYLER.warning_style("Interrupted. Type 'exit' or Ctrl-D to quit."));
+                }
+                Err(ReadlineError::Eof) => {
+                    println!("{}", STYLER.info_style("End of input. Goodbye!"));
+                    break;
+                }
                 Err(err) => {
-                    let error_style = Style::new().red();
-                    eprintln!("{} {}",
-                        error_style.apply_to("[ERROR]"),
-                        error_style.apply_to(format!("Input error: {}", err))
+                    eprintln!(
+                        "{} {}",
+                        STYLER.error_style("[ERROR]"),
+                        STYLER.error_style(format!("Input error: {}", err))
                     );
                     break;
                 }
@@ -187,108 +204,159 @@ impl Prime {
 
         loop {
             if recursion_depth >= MAX_RECURSION_DEPTH {
-                let err_msg = "Max recursion depth reached for this request.";
-                let error_style = Style::new().red();
-                eprintln!("{} {}",
-                    error_style.apply_to("[ERROR]"),
-                    error_style.apply_to(err_msg)
-                );
-                self.session.add_system_message("InternalError", -1, err_msg)
-                    .context("Failed to log max recursion depth error")?; // This uses AnyhowContext
+                let err_msg = "Max correction attempts reached for this request.";
+                eprintln!("{} {}", STYLER.error_style("[ERROR]"), STYLER.error_style(err_msg));
+                self.session.add_cmd_system_message("InternalError", -1, err_msg, None)
+                    .context("Failed to log max recursion depth error")?;
                 return Err(anyhow::anyhow!(err_msg));
             }
 
-            let llm_response = match self.session.generate_prime_response_stream(&current_llm_prompt, recursion_depth > 0).await {
+            let llm_response = match self.session.generate_prime_response_stream(
+                &current_llm_prompt,
+                recursion_depth > 0,
+            ).await {
                 Ok(r) => r,
                 Err(e) => {
-                    let error_style = Style::new().red();
-                    eprintln!("{} {}",
-                        error_style.apply_to("[ERROR]"),
-                        error_style.apply_to(format!("Failed to generate LLM response: {}", e))
-                    );
+                    eprintln!("{} {}", STYLER.error_style("[ERROR]"), STYLER.error_style(format!("Failed to generate LLM response: {}", e)));
                     return Err(e);
                 }
             };
-
-            let separator_style = Style::new().black().bright();
-            println!("\n{}", separator_style.apply_to("━".repeat(70)));
+            
+            println!("\n{}", STYLER.separator_style("-".repeat(70)));
 
             match self.session.process_commands(&llm_response) {
-                Ok(results) if results.is_empty() => {
-                    println!("LLM provided no commands. Task considered complete or requires no action.");
+                Ok(processed_results) if processed_results.is_empty() => {
+                    println!("{}", STYLER.info_style("LLM provided no actions. Task may be complete or require no further steps."));
                     return Ok(());
                 }
-                Ok(results) => {
+                Ok(processed_results) => {
                     let mut all_succeeded = true;
-                    let mut failed_details = String::new();
-                    for res in results {
-                        if !res.success {
-                            all_succeeded = false;
-                            failed_details.push_str(&format!(
-                                "Command:\n```\n{}\n```\nFailed with exit code {}.\nOutput:\n```\n{}\n```\n\n",
-                                res.command, res.exit_code, res.output
-                            ));
+                    let mut failure_details_for_llm = String::new();
+
+                    for result_item in processed_results {
+                        match result_item {
+                            ProcessedItemResult::Command(cmd_res) => {
+                                if !cmd_res.success {
+                                    all_succeeded = false;
+                                    failure_details_for_llm.push_str(&format!(
+                                        "Command:\n```\n{}\n```\nWorking Directory: {}\nFailed with exit code {}.\nOutput:\n```\n{}\n```\n\n",
+                                        cmd_res.command,
+                                        cmd_res.working_dir.as_deref().unwrap_or("N/A"),
+                                        cmd_res.exit_code,
+                                        cmd_res.output
+                                    ));
+                                }
+                            }
+                            ProcessedItemResult::FileOp(file_op_res) => {
+                                if !file_op_res.success {
+                                    all_succeeded = false;
+                                    failure_details_for_llm.push_str(&format!(
+                                        "File Operation:\nAction: {}\nPath: {}\nFailed.\nDetails:\n```\n{}\n```\n\n",
+                                        file_op_res.action, file_op_res.path, file_op_res.output
+                                    ));
+                                }
+                            }
                         }
                     }
+
                     if all_succeeded {
-                        println!("All commands executed successfully.");
+                        println!("{}", STYLER.success_style("All actions executed successfully."));
                         return Ok(());
+                    } else {
+                        recursion_depth += 1;
+                        println!(
+                            "{} Some actions failed. Attempting to correct (Attempt {}/{})...",
+                            STYLER.warning_style("[WARN]"), recursion_depth, MAX_RECURSION_DEPTH
+                        );
+                        current_llm_prompt = format!(
+                            "The previous set of actions resulted in errors. Analyze the failures and provide corrected actions or an alternative approach. Ensure actions are in the correct Pandoc-attributed markdown format.\n\nThe prompt that led to the failed actions was:\n---\n{}\n---\n\nFailed action details:\n{}",
+                            current_llm_prompt,
+                            failure_details_for_llm
+                        );
                     }
-                    recursion_depth += 1;
-                    let warn_style = Style::new().yellow();
-                    println!("{} Some commands failed. Attempting to correct (Attempt {}/{})...",
-                        warn_style.apply_to("[WARN]"), recursion_depth, MAX_RECURSION_DEPTH);
-                    current_llm_prompt = format!(
-                        "The previous set of commands resulted in errors. Analyze the failures and provide corrected commands or an alternative approach. Ensure commands are in the correct Pandoc-attributed markdown format for execution.\n\nThe prompt that led to the failed commands was:\n---\n{}\n---\n\nFailed command details:\n{}Provide only the corrected commands or steps. If you believe the task is unachievable or requires clarification, please state that.",
-                        current_llm_prompt, failed_details
-                    );
                 }
                 Err(e) => {
-                    let error_style = Style::new().red();
-                    eprintln!("{} {}",
-                        error_style.apply_to("[ERROR]"),
-                        error_style.apply_to(format!("Internal error during command processing: {}", e))
-                    );
+                    eprintln!("{} {}", STYLER.error_style("[ERROR]"), STYLER.error_style(format!("Internal error during action processing: {}", e)));
                     return Err(e);
                 }
             }
-        }
-    }
 
-    /// Special commands handler
-    fn handle_special_command(&self, cmd: &str) -> Result<bool> {
-        let parts: Vec<&str> = cmd.splitn(2, ' ').collect();
-        let command = parts[0].to_lowercase();
-        let args = parts.get(1).copied().unwrap_or("");
-        let line_len: usize = 50;
-        match command.as_str() {
-            "memory" => {/* ... unchanged ... */ Ok(true) }
-            "clear" | "cls" => { print!("\x1B[2J\x1B[1;1H"); Ok(true) }
-            "list" => {/* ... unchanged ... */ Ok(true) }
-            "read" => {/* ... unchanged ... */ Ok(true) }
-            "help" => {/* ... unchanged ... */ Ok(true) }
-            "exit" | "quit" => { println!("{}", Style::new().dim().apply_to("Exiting Prime...")); Ok(false) }
-            _ => { println!("Unknown command: !{}. Type !help for available commands.", command); Ok(true) }
-        }
-    }
-
-    /// Highlight code blocks in LLM responses
-    fn highlight_response(&self, response: &str) -> String {
-        let mut result = String::new();
-        let mut in_code = false;
-        let code_style = Style::new().yellow();
-        let delim_style = Style::new().yellow().bright();
-        for line in response.lines() {
-            if line.starts_with("```") {
-                in_code = !in_code;
-                result.push_str(&format!("{}\n", delim_style.apply_to(line)));
-            } else if in_code {
-                result.push_str(&format!("{}\n", code_style.apply_to(line)));
-            } else {
-                result.push_str(line);
-                result.push('\n');
+            if recursion_depth > 0 && recursion_depth < MAX_RECURSION_DEPTH {
+                println!("\n{}", STYLER.separator_style("-".repeat(70)));
             }
         }
-        result
+    }
+
+    fn handle_special_command(&self, cmd_line: &str) -> Result<bool> {
+        let parts: Vec<&str> = cmd_line.splitn(2, ' ').collect();
+        let command = parts[0].to_lowercase();
+        let args = parts.get(1).copied().unwrap_or("").trim();
+
+        match command.as_str() {
+            "memory" => {
+                let memory_type = if args.is_empty() { None } else { Some(args) };
+                match self.session.read_memory(memory_type) {
+                    Ok(mem) => println!("{}\n{}", STYLER.header_style(format!("Memory ({}):", memory_type.unwrap_or("all"))), mem),
+                    Err(e) => eprintln!("{} {}", STYLER.error_style("Error reading memory:"), e),
+                }
+                Ok(true)
+            }
+            "clear" | "cls" => {
+                print!("\x1B[2J\x1B[1;1H");
+                std::io::stdout().flush()?;
+                Ok(true)
+            }
+            "list" => {
+                match self.session.list_messages() {
+                    Ok(list) => {
+                        println!("{}", STYLER.header_style("Conversation History:"));
+                        if list.is_empty() {
+                            println!("{}", STYLER.info_style("  No messages yet."));
+                        } else {
+                            for item in list {
+                                println!("  {}", item);
+                            }
+                        }
+                    }
+                    Err(e) => eprintln!("{} {}", STYLER.error_style("Error listing messages:"), e),
+                }
+                Ok(true)
+            }
+            "read" => {
+                if args.is_empty() {
+                    eprintln!("{}", STYLER.error_style("Usage: !read <message_number>"));
+                } else if let Ok(num) = args.parse::<usize>() {
+                    match self.session.read_message(num) {
+                        Ok(msg) => println!("{}", msg),
+                        Err(e) => eprintln!("{} {}", STYLER.error_style(format!("Error reading message {}:", num)), e),
+                    }
+                } else {
+                    eprintln!("{} Invalid message number: {}", STYLER.error_style("Error:"), args);
+                }
+                Ok(true)
+            }
+            "help" => {
+                println!("{}", STYLER.header_style("Available Special Commands:"));
+                println!("  {:<20} - Show this help message.", STYLER.command_style_alt("!help").to_string());
+                println!("  {:<20} - Show memory (type: short, long, all. Default: all).", STYLER.command_style_alt("!memory [type]").to_string());
+                println!("  {:<20} - List messages in the current session.", STYLER.command_style_alt("!list").to_string());
+                println!("  {:<20} - Read a specific message by its number.", STYLER.command_style_alt("!read <number>").to_string());
+                println!("  {:<20} - Clear the terminal screen.", STYLER.command_style_alt("!clear | !cls").to_string());
+                println!("  {:<20} - Exit Prime.", STYLER.command_style_alt("!exit | !quit").to_string());
+                Ok(true)
+            }
+            "exit" | "quit" => {
+                println!("{}", STYLER.info_style("Exiting Prime..."));
+                Ok(false)
+            }
+            _ => {
+                println!("{} Unknown command: !{}. Type {} for available commands.", 
+                    STYLER.error_style("Error:"), 
+                    command, 
+                    STYLER.command_style_alt("!help")
+                );
+                Ok(true)
+            }
+        }
     }
 }
