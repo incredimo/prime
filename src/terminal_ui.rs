@@ -24,7 +24,9 @@ impl Helper for PrimeHelper {}
 impl Highlighter for PrimeHelper {
     fn highlight_prompt<'b, 's: 'b, 'p: 'b>(&self, prompt: &'p str, default: bool) -> Cow<'b, str> {
         let _ = default;
-        Cow::Owned(prompt.to_string())
+        Cow::Owned(
+            STYLER.prompt_style(format!("{}", prompt)).to_string()
+        )
     }
 
     fn highlight_hint<'h>(&self, hint: &'h str) -> Cow<'h, str> {

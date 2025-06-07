@@ -35,7 +35,7 @@ async fn main() -> Result<()> {
 
     let header_style = Style::new().white().bright().bold();
     let separator_style = Style::new().white().bright();
-    let version_style = Style::new().on_yellow().on_bright();
+    let version_style = Style::new().on_yellow().bold();
     let info_style = Style::new().yellow();
     let bar_char = "━";
 
@@ -203,7 +203,7 @@ impl Prime {
             if recursion_depth >= MAX_RECURSION_DEPTH {
                 let err_msg = "Max correction attempts reached for this request.";
                 eprintln!("{} {}", STYLER.error_style("[ERROR]"), STYLER.error_style(err_msg));
-                self.session.add_cmd_system_message("InternalError", -1, err_msg, None)
+                self.session.add_system_message("InternalError", -1, err_msg)
                     .context("Failed to log max recursion depth error")?;
                 return Err(anyhow::anyhow!(err_msg));
             }
@@ -236,9 +236,8 @@ impl Prime {
                                 if !cmd_res.success {
                                     all_succeeded = false;
                                     failure_details_for_llm.push_str(&format!(
-                                        "Command:\n```\n{}\n```\nWorking Directory: {}\nFailed with exit code {}.\nOutput:\n```\n{}\n```\n\n",
+                                        "Command:\n```\n{}\n```\nFailed with exit code {}.\nOutput:\n```\n{}\n```\n\n",
                                         cmd_res.command,
-                                        cmd_res.working_dir.as_deref().unwrap_or("N/A"),
                                         cmd_res.exit_code,
                                         cmd_res.output
                                     ));
