@@ -14,7 +14,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use lazy_static::lazy_static;
 use log;
 use regex::Regex;
-use reqwest::Client;
+use reqwest::{Client, header}; // Added reqwest::header
 use serde_json::json;
 
 use crate::commands::CommandProcessor;
@@ -38,13 +38,27 @@ lazy_static! {
     static ref DATA_ATTR_RE: Regex = Regex::new(
         r#"\s*data-(?P<key>[a-zA-Z0-9_-]+)="(?P<value>[^"]+)""#
     ).expect("Failed to compile DATA_ATTR_RE regex");
+
+    static ref WEB_OP_RE: Regex = Regex::new(
+        r#"```\{\.web_op\s*(?:[^\}]*?)?data-action="(?P<action>[^"]+)"\s*(?:[^\}]*?)?data-url="(?P<url>[^"]+)"[^\}]*\}\s*```"#
+    ).expect("Failed to compile WEB_OP_RE regex");
 }
 
-/// Represents the result of processing a single item (command or file operation)
+/// Represents the result of processing a single item (command, file operation, or web operation)
 #[derive(Debug)]
 pub enum ProcessedItemResult {
     Command(CommandExecutionResult),
     FileOp(FileOperationResult),
+    WebOp(WebOperationResult),
+}
+
+/// Represents the result of a web operation
+#[derive(Debug)]
+pub struct WebOperationResult {
+    pub action: String,
+    pub url: String,
+    pub success: bool,
+    pub output: String,
 }
 
 /// Represents the result of a file operation
@@ -121,9 +135,13 @@ impl PrimeSession {
         }
         
         // Create HTTP client
+        let mut headers = header::HeaderMap::new();
+        headers.insert(header::USER_AGENT, header::HeaderValue::from_static("Prime-Assistant/1.0"));
+
         let client = Client::builder()
             .timeout(Duration::from_secs(60))
             .gzip(true)
+            .default_headers(headers) // Set default headers with User-Agent
             .build()
             .context("Failed to create HTTP client")?;
         
@@ -322,125 +340,66 @@ impl PrimeSession {
     
     /// Get system prompt for Prime
     fn get_system_prompt(&self) -> Result<String> {
-        let memory = self.memory_manager.read_memory(None)?;
+        const PROMPT_TEMPLATE: &str = include_str!("../prompts/system_prompt.md");
+
+        let memory_content = self.memory_manager.read_memory(None)
+            .context("Failed to read memory for system prompt")?;
         
-        let system_prompt = format!(
-            "# Prime System Instructions
-
-You are Prime, an advanced terminal assistant that helps users manage and configure their systems.
-You can execute shell commands by including them in properly formatted Pandoc attributed markdown code blocks.
-
-## Communication Guidelines
-- Respond in a clear, concise manner
-- When suggesting actions, provide specific commands in code blocks with proper Pandoc attributes
-- After complex operations, summarize what was done
-- If you need to remember something important, mention it explicitly
-
-## Command Execution
-When you want to run a shell command, include it in a code block with Pandoc attributes like this:
-```{{.powershell data-action=\"execute\"}}
-Get-Date
-```
-
-The system will automatically execute these commands and capture their output.
-Wait for command results before continuing with multi-step processes.
-
-## Direct File Operations
-Prime has built-in capabilities for performing common file operations directly and reliably. When you need to create, read, update, delete, or patch files, prefer these operations over generating shell commands like `echo > file.txt` or `Remove-Item`.
-
-Use the following format, specifying the action and path, and providing content within the block if needed:
-
-```{{.file_op data-action="<action_name>" data-path="<path_to_file>" [optional_attributes]}}
-[Content for create, update, patch operations goes here]
-```
-
-**Available File Operations:**
-
-*   **`file_create`**: Creates a new file.
-    *   `data-path`: (Required) Path to the file to create.
-    *   `data-overwrite`: (Optional) Set to `"true"` to overwrite if the file already exists. Defaults to `"false"`.
-    *   Content: The text content for the new file.
-    *   Example:
-        ```{{.file_op data-action="file_create" data-path="src/new_module.rs" data-overwrite="false"}}
-        // Rust module content
-        pub fn new_function() {
-            println!("Hello from new module!");
-        }
-        ```
-
-*   **`file_read`**: Reads the content of an existing file.
-    *   `data-path`: (Required) Path to the file to read.
-    *   Content: Block should be empty. The file content will be returned to you.
-    *   Example:
-        ```{{.file_op data-action="file_read" data-path="src/main.rs"}}
-        ```
-
-*   **`file_update`**: Updates (overwrites) an existing file with new content.
-    *   `data-path`: (Required) Path to the file to update.
-    *   Content: The new text content for the file.
-    *   Example:
-        ```{{.file_op data-action="file_update" data-path="README.md"}}
-        # New Project Title
-        Updated project description.
-        ```
-
-*   **`file_delete`**: Deletes a file or directory.
-    *   `data-path`: (Required) Path to the file or directory to delete.
-    *   `data-recursive`: (Optional) Set to `"true"` to delete directories recursively. Defaults to `"false"`.
-    *   Content: Block should be empty.
-    *   Example (delete a file):
-        ```{{.file_op data-action="file_delete" data-path="old_config.txt"}}
-        ```
-    *   Example (delete a directory recursively):
-        ```{{.file_op data-action="file_delete" data-path="temp_output/" data-recursive="true"}}
-        ```
-
-*   **`file_patch`**: Applies a diff patch to an existing file.
-    *   `data-path`: (Required) Path to the file to patch.
-    *   `data-diff-format`: (Optional) Specify diff format. Defaults to `"unified"`.
-    *   Content: The diff content (e.g., in unified diff format).
-    *   Example:
-        ```{{.file_op data-action="file_patch" data-path="src/main.rs" data-diff-format="unified"}}
-        --- a/src/main.rs
-        +++ b/src/main.rs
-
-         fn main() {
-        -    println!("Hello, old world!");
-        +    println!("Hello, new world!");
-             // ...
-         }
-        ```
-
-Remember to use these direct file operations when appropriate for safer and more precise file manipulation. For other tasks, continue to use PowerShell commands as described in the "Command Execution" section.
-
-## Memory Context
-The following represents your current memory about the user's system:
-
-{}
-
-## Guidelines
-- For complex tasks, break them down into step-by-step commands
-- Always check command results before proceeding with dependent steps
-- Be careful with destructive operations (rm, fd, etc.)
-- If unsure about a system state, run diagnostic commands first
-- Always use proper Pandoc attributed markdown format for all code blocks
-- You are currently in a Windows 11 environment using PowerShell
-- Use PowerShell commands rather than Unix/Linux commands
-",
-            memory
-        );
+        let final_prompt = PROMPT_TEMPLATE.replace("{{MEMORY_CONTEXT}}", &memory_content);
         
-        Ok(system_prompt)
+        Ok(final_prompt)
     }
     
     /// Process any commands in Prime's response
-    pub fn process_commands(&self, response: &str) -> Result<Vec<ProcessedItemResult>> {
+    pub async fn process_commands(&self, response: &str) -> Result<Vec<ProcessedItemResult>> {
         let mut results = Vec::new();
-        let mut found_file_ops = false;
+        let mut found_structured_op = false; // Used to track if any .web_op or .file_op was found
 
-        // --- 1. Process File Operations First ---
+        // --- 1. Process Web Operations ---
+        for cap in WEB_OP_RE.captures_iter(response) {
+            found_structured_op = true;
+            let action_str = cap.name("action").map_or("", |m| m.as_str()).to_lowercase();
+            let url_str = cap.name("url").map_or("", |m| m.as_str());
+
+            if action_str == "fetch_text" {
+                // TODO: Replace with actual call to crate::web_ops::handle_fetch_text_web_op(&self.client, url_str).await;
+                // For now, using a placeholder direct result for structure.
+                // let handler_result = Ok(format!("Successfully fetched (placeholder) text from URL: {}", url_str));
+                let handler_result = crate::web_ops::handle_fetch_text_web_op(&self.client, url_str).await;
+
+
+                let (success, output) = match handler_result {
+                    Ok(content) => (true, content),
+                    Err(e) => (false, e.to_string()),
+                };
+
+                let log_summary = format!("web_fetch_text {}", url_str);
+                let log_exit_code = if success { 0 } else { -1 };
+                self.add_system_message(&log_summary, log_exit_code, &output)?;
+
+                results.push(ProcessedItemResult::WebOp(WebOperationResult {
+                    action: action_str.clone(),
+                    url: url_str.to_string(),
+                    success,
+                    output,
+                }));
+            } else {
+                log::warn!("Unknown web operation action: {}", action_str);
+                // Optionally, add a result indicating this unknown action
+                results.push(ProcessedItemResult::WebOp(WebOperationResult {
+                    action: action_str.clone(),
+                    url: url_str.to_string(),
+                    success: false,
+                    output: format!("Unknown web operation action: {}", action_str),
+                }));
+            }
+        }
+
+        // --- 2. Process File Operations ---
+        // Only proceed if no web ops claimed the response, or make sure regexes are mutually exclusive.
+        // Assuming .web_op and .file_op are distinct and won't match the same block.
         for cap in FILE_OP_RE.captures_iter(response) {
-            found_file_ops = true;
+            found_structured_op = true; // A structured operation was found
             let action = cap.name("action").map_or("", |m| m.as_str()).to_lowercase();
             let path_str = cap.name("path").map_or("", |m| m.as_str());
             let attributes_str = cap.name("attributes").map_or("", |m| m.as_str());
@@ -487,22 +446,20 @@ The following represents your current memory about the user's system:
             };
 
             let file_op_summary_for_log = format!("file_{} {}", action, path_str);
-            // Use 0 for success, -1 for failure for logging purposes with add_system_message
             let log_exit_code = if success { 0 } else { -1 };
             self.add_system_message(&file_op_summary_for_log, log_exit_code, &output_str)?;
 
-
             results.push(ProcessedItemResult::FileOp(FileOperationResult {
-                action,
+                action, // action is already to_lowercase()
                 path: path_str.to_string(),
                 success,
                 output: output_str,
             }));
         }
 
-        // --- 2. Process Shell Commands if no file operations were found ---
-        if !found_file_ops {
-            let mut found_shell_commands = false;
+        // --- 3. Process Shell Commands if no structured operations (web or file) were found ---
+        if !found_structured_op {
+            let mut found_shell_commands = false; // Tracks if any shell block (pandoc or fallback) was found
             let execute_and_record = |command_str: &str, results_vec: &mut Vec<ProcessedItemResult>| -> Result<()> {
                 if command_str.is_empty() {
                     return Ok(());
@@ -527,8 +484,9 @@ The following represents your current memory about the user's system:
                 }
             }
 
-            if !found_shell_commands {
+            if !found_shell_commands { // Only try fallback if no Pandoc shell commands were found
                 for cap in FALLBACK_RE.captures_iter(response) {
+                    found_shell_commands = true; // Mark that a fallback shell command was found
                     if let Some(cmd_match) = cap.get(1) {
                         execute_and_record(cmd_match.as_str().trim(), &mut results)?;
                     }
