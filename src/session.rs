@@ -12,6 +12,7 @@ use console::Style;
 use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use lazy_static::lazy_static;
+use log;
 use regex::Regex;
 use reqwest::Client;
 use serde_json::json;
@@ -28,6 +29,15 @@ lazy_static! {
     static ref FALLBACK_RE: Regex = Regex::new(
         r"```(?:shell|bash|sh|powershell|ps1)\s*\n([\s\S]*?)```"
     ).expect("Failed to compile fallback shell block regex");
+
+    static ref FILE_OP_RE: Regex = Regex::new(
+        r#"```\{\.file_op\s*(?:[^\}]*?)?data-action="(?P<action>[^"]+)"\s*(?:[^\}]*?)?data-path="(?P<path>[^"]+)"(?P<attributes>[^\}]*)\}\s*\n?(?P<content>[\s\S]*?)```"#
+    ).expect("Failed to compile FILE_OP_RE regex");
+
+    // Regex for parsing individual data attributes from the captured 'attributes' string
+    static ref DATA_ATTR_RE: Regex = Regex::new(
+        r#"\s*data-(?P<key>[a-zA-Z0-9_-]+)="(?P<value>[^"]+)""#
+    ).expect("Failed to compile DATA_ATTR_RE regex");
 }
 
 /// Represents the result of processing a single item (command or file operation)
@@ -75,6 +85,15 @@ pub struct PrimeSession {
     
     // HTTP client
     client: Client,
+}
+
+// Helper functions for parsing attributes from FILE_OP_RE
+fn get_bool_attr(attrs: &std::collections::HashMap<String, String>, key: &str, default: bool) -> bool {
+    attrs.get(key).and_then(|s| s.parse().ok()).unwrap_or(default)
+}
+
+fn get_string_attr<'a>(attrs: &'a std::collections::HashMap<String, String>, key: &str, default: &'a str) -> &'a str {
+    attrs.get(key).map(|s| s.as_str()).unwrap_or(default)
 }
 
 impl PrimeSession {
@@ -326,6 +345,74 @@ Get-Date
 The system will automatically execute these commands and capture their output.
 Wait for command results before continuing with multi-step processes.
 
+## Direct File Operations
+Prime has built-in capabilities for performing common file operations directly and reliably. When you need to create, read, update, delete, or patch files, prefer these operations over generating shell commands like `echo > file.txt` or `Remove-Item`.
+
+Use the following format, specifying the action and path, and providing content within the block if needed:
+
+```{{.file_op data-action="<action_name>" data-path="<path_to_file>" [optional_attributes]}}
+[Content for create, update, patch operations goes here]
+```
+
+**Available File Operations:**
+
+*   **`file_create`**: Creates a new file.
+    *   `data-path`: (Required) Path to the file to create.
+    *   `data-overwrite`: (Optional) Set to `"true"` to overwrite if the file already exists. Defaults to `"false"`.
+    *   Content: The text content for the new file.
+    *   Example:
+        ```{{.file_op data-action="file_create" data-path="src/new_module.rs" data-overwrite="false"}}
+        // Rust module content
+        pub fn new_function() {
+            println!("Hello from new module!");
+        }
+        ```
+
+*   **`file_read`**: Reads the content of an existing file.
+    *   `data-path`: (Required) Path to the file to read.
+    *   Content: Block should be empty. The file content will be returned to you.
+    *   Example:
+        ```{{.file_op data-action="file_read" data-path="src/main.rs"}}
+        ```
+
+*   **`file_update`**: Updates (overwrites) an existing file with new content.
+    *   `data-path`: (Required) Path to the file to update.
+    *   Content: The new text content for the file.
+    *   Example:
+        ```{{.file_op data-action="file_update" data-path="README.md"}}
+        # New Project Title
+        Updated project description.
+        ```
+
+*   **`file_delete`**: Deletes a file or directory.
+    *   `data-path`: (Required) Path to the file or directory to delete.
+    *   `data-recursive`: (Optional) Set to `"true"` to delete directories recursively. Defaults to `"false"`.
+    *   Content: Block should be empty.
+    *   Example (delete a file):
+        ```{{.file_op data-action="file_delete" data-path="old_config.txt"}}
+        ```
+    *   Example (delete a directory recursively):
+        ```{{.file_op data-action="file_delete" data-path="temp_output/" data-recursive="true"}}
+        ```
+
+*   **`file_patch`**: Applies a diff patch to an existing file.
+    *   `data-path`: (Required) Path to the file to patch.
+    *   `data-diff-format`: (Optional) Specify diff format. Defaults to `"unified"`.
+    *   Content: The diff content (e.g., in unified diff format).
+    *   Example:
+        ```{{.file_op data-action="file_patch" data-path="src/main.rs" data-diff-format="unified"}}
+        --- a/src/main.rs
+        +++ b/src/main.rs
+
+         fn main() {
+        -    println!("Hello, old world!");
+        +    println!("Hello, new world!");
+             // ...
+         }
+        ```
+
+Remember to use these direct file operations when appropriate for safer and more precise file manipulation. For other tasks, continue to use PowerShell commands as described in the "Command Execution" section.
+
 ## Memory Context
 The following represents your current memory about the user's system:
 
@@ -349,50 +436,105 @@ The following represents your current memory about the user's system:
     /// Process any commands in Prime's response
     pub fn process_commands(&self, response: &str) -> Result<Vec<ProcessedItemResult>> {
         let mut results = Vec::new();
-        let mut found_commands = false;
+        let mut found_file_ops = false;
 
-        // Helper closure to execute and record a command
-        let execute_and_record = |command_str: &str, results_vec: &mut Vec<ProcessedItemResult>| -> Result<()> {
-            if command_str.is_empty() {
-                return Ok(());
+        // --- 1. Process File Operations First ---
+        for cap in FILE_OP_RE.captures_iter(response) {
+            found_file_ops = true;
+            let action = cap.name("action").map_or("", |m| m.as_str()).to_lowercase();
+            let path_str = cap.name("path").map_or("", |m| m.as_str());
+            let attributes_str = cap.name("attributes").map_or("", |m| m.as_str());
+            let content_str = cap.name("content").map_or("", |m| m.as_str());
+
+            let resolved_path = self.base_dir.join(path_str.trim());
+
+            let mut attributes_map = std::collections::HashMap::new();
+            for attr_cap in DATA_ATTR_RE.captures_iter(attributes_str) {
+                let key = attr_cap.name("key").map_or("", |m| m.as_str()).to_string();
+                let value = attr_cap.name("value").map_or("", |m| m.as_str()).to_string();
+                attributes_map.insert(key, value);
             }
-            // Command output will be handled by add_system_message
-            let command_style = Style::new().cyan();
-            println!("\n{}", command_style.apply_to("Executing command:"));
-            let (exit_code, output) = self.command_processor.execute_command(command_str, None)?;
-            self.add_system_message(command_str, exit_code, &output)?;
-            results_vec.push(ProcessedItemResult::Command(CommandExecutionResult {
-                command: command_str.to_string(),
-                exit_code,
-                output,
-                success: exit_code == 0,
+
+            let overwrite = get_bool_attr(&attributes_map, "overwrite", false);
+            let recursive = get_bool_attr(&attributes_map, "recursive", false);
+            let diff_format = get_string_attr(&attributes_map, "diff-format", "unified").to_string(); // owned
+
+            let operation_result: Result<String> = match action.as_str() {
+                "file_create" => {
+                    crate::commands::command_utils::handle_create_file(&resolved_path, content_str.trim_end_matches('\n'), overwrite)
+                }
+                "file_read" => {
+                    crate::commands::command_utils::handle_read_file(&resolved_path)
+                }
+                "file_update" => {
+                    crate::commands::command_utils::handle_update_file(&resolved_path, content_str.trim_end_matches('\n'))
+                }
+                "file_delete" => {
+                    crate::commands::command_utils::handle_delete_file(&resolved_path, recursive)
+                }
+                "file_patch" => {
+                    crate::commands::command_utils::handle_patch_file(&resolved_path, content_str.trim_matches('\n'), &diff_format)
+                }
+                unknown_action => {
+                    log::warn!("Unknown file operation action: {}", unknown_action);
+                    Err(anyhow::anyhow!("Unknown file operation action: {}", unknown_action))
+                }
+            };
+
+            let (success, output_str) = match operation_result {
+                Ok(s) => (true, s),
+                Err(e) => (false, e.to_string()),
+            };
+
+            let file_op_summary_for_log = format!("file_{} {}", action, path_str);
+            // Use 0 for success, -1 for failure for logging purposes with add_system_message
+            let log_exit_code = if success { 0 } else { -1 };
+            self.add_system_message(&file_op_summary_for_log, log_exit_code, &output_str)?;
+
+
+            results.push(ProcessedItemResult::FileOp(FileOperationResult {
+                action,
+                path: path_str.to_string(),
+                success,
+                output: output_str,
             }));
-            Ok(())
-        };
-
-        // First try to match Pandoc attributed blocks
-        // Try Pandoc format first
-        for cap in PANDOC_RE.captures_iter(response) {
-            found_commands = true;
-            if let Some(cmd_match) = cap.get(1) {
-                execute_and_record(cmd_match.as_str().trim(), &mut results)?;
-            }
         }
-        
-        // If no Pandoc blocks found, fall back to standard blocks
-        if !found_commands {
-            for cap in FALLBACK_RE.captures_iter(response) {
-                // found_commands = true; // This assignment is redundant if the loop is entered.
+
+        // --- 2. Process Shell Commands if no file operations were found ---
+        if !found_file_ops {
+            let mut found_shell_commands = false;
+            let execute_and_record = |command_str: &str, results_vec: &mut Vec<ProcessedItemResult>| -> Result<()> {
+                if command_str.is_empty() {
+                    return Ok(());
+                }
+                let command_style = Style::new().cyan();
+                println!("\n{}", command_style.apply_to("Executing command:"));
+                let (exit_code, output) = self.command_processor.execute_command(command_str, None)?; // Assuming execution in base_dir for now
+                self.add_system_message(command_str, exit_code, &output)?;
+                results_vec.push(ProcessedItemResult::Command(CommandExecutionResult {
+                    command: command_str.to_string(),
+                    exit_code,
+                    output,
+                    success: exit_code == 0,
+                }));
+                Ok(())
+            };
+
+            for cap in PANDOC_RE.captures_iter(response) {
+                found_shell_commands = true;
                 if let Some(cmd_match) = cap.get(1) {
                     execute_and_record(cmd_match.as_str().trim(), &mut results)?;
                 }
             }
-        }
-        
-        // If !found_commands, results will be empty.
-        // The caller (Prime::process_user_input) checks if results.is_empty()
-        // to determine if the LLM provided any executable commands.
 
+            if !found_shell_commands {
+                for cap in FALLBACK_RE.captures_iter(response) {
+                    if let Some(cmd_match) = cap.get(1) {
+                        execute_and_record(cmd_match.as_str().trim(), &mut results)?;
+                    }
+                }
+            }
+        }
         Ok(results)
     }
     
