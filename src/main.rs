@@ -16,6 +16,7 @@ mod commands;
 mod memory;
 mod terminal_ui;
 mod config_utils;
+pub mod web_ops;
 
 use session::{PrimeSession, ProcessedItemResult};
 use terminal_ui::PrimeHelper;
@@ -221,7 +222,7 @@ impl Prime {
             
             println!("\n{}", STYLER.separator_style("-".repeat(70)));
 
-            match self.session.process_commands(&llm_response) {
+            match self.session.process_commands(&llm_response).await {
                 Ok(processed_results) if processed_results.is_empty() => {
                     println!("{}", STYLER.info_style("LLM provided no actions. Task may be complete or require no further steps."));
                     return Ok(());
@@ -249,6 +250,15 @@ impl Prime {
                                     failure_details_for_llm.push_str(&format!(
                                         "File Operation:\nAction: {}\nPath: {}\nFailed.\nDetails:\n```\n{}\n```\n\n",
                                         file_op_res.action, file_op_res.path, file_op_res.output
+                                    ));
+                                }
+                            }
+                            ProcessedItemResult::WebOp(web_op_res) => {
+                                if !web_op_res.success {
+                                    all_succeeded = false;
+                                    failure_details_for_llm.push_str(&format!(
+                                        "Web Operation:\nAction: {}\nURL: {}\nFailed.\nDetails:\n```\n{}\n```\n\n",
+                                        web_op_res.action, web_op_res.url, web_op_res.output
                                     ));
                                 }
                             }

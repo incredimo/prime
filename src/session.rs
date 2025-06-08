@@ -12,8 +12,9 @@ use console::Style;
 use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use lazy_static::lazy_static;
+use log;
 use regex::Regex;
-use reqwest::Client;
+use reqwest::{Client, header}; // Added reqwest::header
 use serde_json::json;
 
 use crate::commands::CommandProcessor;
@@ -28,13 +29,36 @@ lazy_static! {
     static ref FALLBACK_RE: Regex = Regex::new(
         r"```(?:shell|bash|sh|powershell|ps1)\s*\n([\s\S]*?)```"
     ).expect("Failed to compile fallback shell block regex");
+
+    static ref FILE_OP_RE: Regex = Regex::new(
+        r#"```\{\.file_op\s*(?:[^\}]*?)?data-action="(?P<action>[^"]+)"\s*(?:[^\}]*?)?data-path="(?P<path>[^"]+)"(?P<attributes>[^\}]*)\}\s*\n?(?P<content>[\s\S]*?)```"#
+    ).expect("Failed to compile FILE_OP_RE regex");
+
+    // Regex for parsing individual data attributes from the captured 'attributes' string
+    static ref DATA_ATTR_RE: Regex = Regex::new(
+        r#"\s*data-(?P<key>[a-zA-Z0-9_-]+)="(?P<value>[^"]+)""#
+    ).expect("Failed to compile DATA_ATTR_RE regex");
+
+    static ref WEB_OP_RE: Regex = Regex::new(
+        r#"```\{\.web_op\s*(?:[^\}]*?)?data-action="(?P<action>[^"]+)"\s*(?:[^\}]*?)?data-url="(?P<url>[^"]+)"[^\}]*\}\s*```"#
+    ).expect("Failed to compile WEB_OP_RE regex");
 }
 
-/// Represents the result of processing a single item (command or file operation)
+/// Represents the result of processing a single item (command, file operation, or web operation)
 #[derive(Debug)]
 pub enum ProcessedItemResult {
     Command(CommandExecutionResult),
     FileOp(FileOperationResult),
+    WebOp(WebOperationResult),
+}
+
+/// Represents the result of a web operation
+#[derive(Debug)]
+pub struct WebOperationResult {
+    pub action: String,
+    pub url: String,
+    pub success: bool,
+    pub output: String,
 }
 
 /// Represents the result of a file operation
@@ -77,6 +101,15 @@ pub struct PrimeSession {
     client: Client,
 }
 
+// Helper functions for parsing attributes from FILE_OP_RE
+fn get_bool_attr(attrs: &std::collections::HashMap<String, String>, key: &str, default: bool) -> bool {
+    attrs.get(key).and_then(|s| s.parse().ok()).unwrap_or(default)
+}
+
+fn get_string_attr<'a>(attrs: &'a std::collections::HashMap<String, String>, key: &str, default: &'a str) -> &'a str {
+    attrs.get(key).map(|s| s.as_str()).unwrap_or(default)
+}
+
 impl PrimeSession {
     /// Create a new Prime session
     pub fn new(base_dir: PathBuf, ollama_model: &str, ollama_api_base: &str) -> Result<Self> {
@@ -102,9 +135,13 @@ impl PrimeSession {
         }
         
         // Create HTTP client
+        let mut headers = header::HeaderMap::new();
+        headers.insert(header::USER_AGENT, header::HeaderValue::from_static("Prime-Assistant/1.0"));
+
         let client = Client::builder()
             .timeout(Duration::from_secs(60))
             .gzip(true)
+            .default_headers(headers) // Set default headers with User-Agent
             .build()
             .context("Failed to create HTTP client")?;
         
@@ -303,96 +340,159 @@ impl PrimeSession {
     
     /// Get system prompt for Prime
     fn get_system_prompt(&self) -> Result<String> {
-        let memory = self.memory_manager.read_memory(None)?;
+        const PROMPT_TEMPLATE: &str = include_str!("../prompts/system_prompt.md");
+
+        let memory_content = self.memory_manager.read_memory(None)
+            .context("Failed to read memory for system prompt")?;
         
-        let system_prompt = format!(
-            "# Prime System Instructions
-
-You are Prime, an advanced terminal assistant that helps users manage and configure their systems.
-You can execute shell commands by including them in properly formatted Pandoc attributed markdown code blocks.
-
-## Communication Guidelines
-- Respond in a clear, concise manner
-- When suggesting actions, provide specific commands in code blocks with proper Pandoc attributes
-- After complex operations, summarize what was done
-- If you need to remember something important, mention it explicitly
-
-## Command Execution
-When you want to run a shell command, include it in a code block with Pandoc attributes like this:
-```{{.powershell data-action=\"execute\"}}
-Get-Date
-```
-
-The system will automatically execute these commands and capture their output.
-Wait for command results before continuing with multi-step processes.
-
-## Memory Context
-The following represents your current memory about the user's system:
-
-{}
-
-## Guidelines
-- For complex tasks, break them down into step-by-step commands
-- Always check command results before proceeding with dependent steps
-- Be careful with destructive operations (rm, fd, etc.)
-- If unsure about a system state, run diagnostic commands first
-- Always use proper Pandoc attributed markdown format for all code blocks
-- You are currently in a Windows 11 environment using PowerShell
-- Use PowerShell commands rather than Unix/Linux commands
-",
-            memory
-        );
+        let final_prompt = PROMPT_TEMPLATE.replace("{{MEMORY_CONTEXT}}", &memory_content);
         
-        Ok(system_prompt)
+        Ok(final_prompt)
     }
     
     /// Process any commands in Prime's response
-    pub fn process_commands(&self, response: &str) -> Result<Vec<ProcessedItemResult>> {
+    pub async fn process_commands(&self, response: &str) -> Result<Vec<ProcessedItemResult>> {
         let mut results = Vec::new();
-        let mut found_commands = false;
+        let mut found_structured_op = false; // Used to track if any .web_op or .file_op was found
 
-        // Helper closure to execute and record a command
-        let execute_and_record = |command_str: &str, results_vec: &mut Vec<ProcessedItemResult>| -> Result<()> {
-            if command_str.is_empty() {
-                return Ok(());
-            }
-            // Command output will be handled by add_system_message
-            let command_style = Style::new().cyan();
-            println!("\n{}", command_style.apply_to("Executing command:"));
-            let (exit_code, output) = self.command_processor.execute_command(command_str, None)?;
-            self.add_system_message(command_str, exit_code, &output)?;
-            results_vec.push(ProcessedItemResult::Command(CommandExecutionResult {
-                command: command_str.to_string(),
-                exit_code,
-                output,
-                success: exit_code == 0,
-            }));
-            Ok(())
-        };
+        // --- 1. Process Web Operations ---
+        for cap in WEB_OP_RE.captures_iter(response) {
+            found_structured_op = true;
+            let action_str = cap.name("action").map_or("", |m| m.as_str()).to_lowercase();
+            let url_str = cap.name("url").map_or("", |m| m.as_str());
 
-        // First try to match Pandoc attributed blocks
-        // Try Pandoc format first
-        for cap in PANDOC_RE.captures_iter(response) {
-            found_commands = true;
-            if let Some(cmd_match) = cap.get(1) {
-                execute_and_record(cmd_match.as_str().trim(), &mut results)?;
+            if action_str == "fetch_text" {
+                // TODO: Replace with actual call to crate::web_ops::handle_fetch_text_web_op(&self.client, url_str).await;
+                // For now, using a placeholder direct result for structure.
+                // let handler_result = Ok(format!("Successfully fetched (placeholder) text from URL: {}", url_str));
+                let handler_result = crate::web_ops::handle_fetch_text_web_op(&self.client, url_str).await;
+
+
+                let (success, output) = match handler_result {
+                    Ok(content) => (true, content),
+                    Err(e) => (false, e.to_string()),
+                };
+
+                let log_summary = format!("web_fetch_text {}", url_str);
+                let log_exit_code = if success { 0 } else { -1 };
+                self.add_system_message(&log_summary, log_exit_code, &output)?;
+
+                results.push(ProcessedItemResult::WebOp(WebOperationResult {
+                    action: action_str.clone(),
+                    url: url_str.to_string(),
+                    success,
+                    output,
+                }));
+            } else {
+                log::warn!("Unknown web operation action: {}", action_str);
+                // Optionally, add a result indicating this unknown action
+                results.push(ProcessedItemResult::WebOp(WebOperationResult {
+                    action: action_str.clone(),
+                    url: url_str.to_string(),
+                    success: false,
+                    output: format!("Unknown web operation action: {}", action_str),
+                }));
             }
         }
-        
-        // If no Pandoc blocks found, fall back to standard blocks
-        if !found_commands {
-            for cap in FALLBACK_RE.captures_iter(response) {
-                // found_commands = true; // This assignment is redundant if the loop is entered.
+
+        // --- 2. Process File Operations ---
+        // Only proceed if no web ops claimed the response, or make sure regexes are mutually exclusive.
+        // Assuming .web_op and .file_op are distinct and won't match the same block.
+        for cap in FILE_OP_RE.captures_iter(response) {
+            found_structured_op = true; // A structured operation was found
+            let action = cap.name("action").map_or("", |m| m.as_str()).to_lowercase();
+            let path_str = cap.name("path").map_or("", |m| m.as_str());
+            let attributes_str = cap.name("attributes").map_or("", |m| m.as_str());
+            let content_str = cap.name("content").map_or("", |m| m.as_str());
+
+            let resolved_path = self.base_dir.join(path_str.trim());
+
+            let mut attributes_map = std::collections::HashMap::new();
+            for attr_cap in DATA_ATTR_RE.captures_iter(attributes_str) {
+                let key = attr_cap.name("key").map_or("", |m| m.as_str()).to_string();
+                let value = attr_cap.name("value").map_or("", |m| m.as_str()).to_string();
+                attributes_map.insert(key, value);
+            }
+
+            let overwrite = get_bool_attr(&attributes_map, "overwrite", false);
+            let recursive = get_bool_attr(&attributes_map, "recursive", false);
+            let diff_format = get_string_attr(&attributes_map, "diff-format", "unified").to_string(); // owned
+
+            let operation_result: Result<String> = match action.as_str() {
+                "file_create" => {
+                    crate::commands::command_utils::handle_create_file(&resolved_path, content_str.trim_end_matches('\n'), overwrite)
+                }
+                "file_read" => {
+                    crate::commands::command_utils::handle_read_file(&resolved_path)
+                }
+                "file_update" => {
+                    crate::commands::command_utils::handle_update_file(&resolved_path, content_str.trim_end_matches('\n'))
+                }
+                "file_delete" => {
+                    crate::commands::command_utils::handle_delete_file(&resolved_path, recursive)
+                }
+                "file_patch" => {
+                    crate::commands::command_utils::handle_patch_file(&resolved_path, content_str.trim_matches('\n'), &diff_format)
+                }
+                unknown_action => {
+                    log::warn!("Unknown file operation action: {}", unknown_action);
+                    Err(anyhow::anyhow!("Unknown file operation action: {}", unknown_action))
+                }
+            };
+
+            let (success, output_str) = match operation_result {
+                Ok(s) => (true, s),
+                Err(e) => (false, e.to_string()),
+            };
+
+            let file_op_summary_for_log = format!("file_{} {}", action, path_str);
+            let log_exit_code = if success { 0 } else { -1 };
+            self.add_system_message(&file_op_summary_for_log, log_exit_code, &output_str)?;
+
+            results.push(ProcessedItemResult::FileOp(FileOperationResult {
+                action, // action is already to_lowercase()
+                path: path_str.to_string(),
+                success,
+                output: output_str,
+            }));
+        }
+
+        // --- 3. Process Shell Commands if no structured operations (web or file) were found ---
+        if !found_structured_op {
+            let mut found_shell_commands = false; // Tracks if any shell block (pandoc or fallback) was found
+            let execute_and_record = |command_str: &str, results_vec: &mut Vec<ProcessedItemResult>| -> Result<()> {
+                if command_str.is_empty() {
+                    return Ok(());
+                }
+                let command_style = Style::new().cyan();
+                println!("\n{}", command_style.apply_to("Executing command:"));
+                let (exit_code, output) = self.command_processor.execute_command(command_str, None)?; // Assuming execution in base_dir for now
+                self.add_system_message(command_str, exit_code, &output)?;
+                results_vec.push(ProcessedItemResult::Command(CommandExecutionResult {
+                    command: command_str.to_string(),
+                    exit_code,
+                    output,
+                    success: exit_code == 0,
+                }));
+                Ok(())
+            };
+
+            for cap in PANDOC_RE.captures_iter(response) {
+                found_shell_commands = true;
                 if let Some(cmd_match) = cap.get(1) {
                     execute_and_record(cmd_match.as_str().trim(), &mut results)?;
                 }
             }
-        }
-        
-        // If !found_commands, results will be empty.
-        // The caller (Prime::process_user_input) checks if results.is_empty()
-        // to determine if the LLM provided any executable commands.
 
+            if !found_shell_commands { // Only try fallback if no Pandoc shell commands were found
+                for cap in FALLBACK_RE.captures_iter(response) {
+                    found_shell_commands = true; // Mark that a fallback shell command was found
+                    if let Some(cmd_match) = cap.get(1) {
+                        execute_and_record(cmd_match.as_str().trim(), &mut results)?;
+                    }
+                }
+            }
+        }
         Ok(results)
     }
     

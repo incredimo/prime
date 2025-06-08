@@ -336,4 +336,325 @@ pub mod command_utils {
         }
         Ok(())
     }
+
+    // --- File Operation Handlers ---
+
+    /// Handles creating a file.
+    pub fn handle_create_file(path: &Path, content: &str, overwrite: bool) -> Result<String> {
+        if path.exists() && !overwrite {
+            return Err(anyhow::anyhow!("File already exists and overwrite is false."));
+        }
+        write_file(path, content)
+            .with_context(|| format!("Failed to create file: {}", path.display()))?;
+        Ok("File created successfully.".to_string())
+    }
+
+    /// Handles reading a file.
+    pub fn handle_read_file(path: &Path) -> Result<String> {
+        if !path.exists() {
+            return Err(anyhow::anyhow!("File not found: {}", path.display()));
+        }
+        // The boolean for truncation can be ignored here or logged.
+        // The content string itself will indicate truncation if it happened.
+        read_file_to_string_with_limit(path)
+            .map(|(content, _)| content)
+            .with_context(|| format!("Failed to read file: {}", path.display()))
+    }
+
+    /// Handles updating an existing file.
+    pub fn handle_update_file(path: &Path, content: &str) -> Result<String> {
+        if !path.exists() {
+            return Err(anyhow::anyhow!("File not found for update: {}", path.display()));
+        }
+        write_file(path, content) // write_file overwrites by default
+            .with_context(|| format!("Failed to update file: {}", path.display()))?;
+        Ok("File updated successfully.".to_string())
+    }
+
+    /// Handles deleting a file or directory.
+    pub fn handle_delete_file(path: &Path, recursive: bool) -> Result<String> {
+        if !path.exists() {
+            return Err(anyhow::anyhow!("File or directory not found for deletion: {}", path.display()));
+        }
+
+        if path.is_dir() {
+            if recursive {
+                fs::remove_dir_all(path)
+                    .with_context(|| format!("Failed to recursively delete directory: {}", path.display()))?;
+            } else {
+                // Check if directory is empty before attempting non-recursive delete
+                if fs::read_dir(path)?.next().is_some() {
+                    return Err(anyhow::anyhow!(
+                        "Path is a non-empty directory and recursive delete is false: {}",
+                        path.display()
+                    ));
+                }
+                fs::remove_dir(path)
+                    .with_context(|| format!("Failed to delete empty directory: {}. Ensure it is empty or use recursive delete.", path.display()))?;
+            }
+        } else {
+            fs::remove_file(path)
+                .with_context(|| format!("Failed to delete file: {}", path.display()))?;
+        }
+        Ok("File/directory deleted successfully.".to_string())
+    }
+
+    /// Handles patching a file using a diff.
+    pub fn handle_patch_file(path: &Path, diff_content: &str, _diff_format: &str) -> Result<String> {
+        // Assuming _diff_format is "unified" for now.
+        // This function depends on the `patch` crate.
+        if !path.exists() {
+            return Err(anyhow::anyhow!("File not found for patching: {}", path.display()));
+        }
+
+        let original_content = fs::read_to_string(path)
+            .with_context(|| format!("Failed to read original file for patching: {}", path.display()))?;
+
+        let patch_obj = patch::Patch::from_str(diff_content)
+            .map_err(|e| anyhow::anyhow!("Failed to parse diff content: {}", e))
+            .with_context(|| "Error parsing patch object from diff string")?;
+
+        let patched_content_cow = patch::apply(&original_content, &patch_obj)
+            .map_err(|e| anyhow::anyhow!("Failed to apply patch: {}", e))
+            .with_context(|| format!("Error applying patch to file: {}", path.display()))?;
+
+        let patched_content_string = patched_content_cow.into_owned();
+
+        fs::write(path, patched_content_string)
+            .with_context(|| format!("Failed to write patched content to file: {}", path.display()))?;
+
+        Ok("File patched successfully.".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::command_utils::*; // Imports handlers from command_utils
+    use std::fs;
+    use tempfile::tempdir; // For creating temporary directories
+    use std::path::PathBuf;
+
+    // Helper to create a temp file with content
+    fn create_temp_file(dir: &tempfile::TempDir, name: &str, content: &str) -> PathBuf {
+        let file_path = dir.path().join(name);
+        if let Some(parent) = file_path.parent() {
+            fs::create_dir_all(parent).expect("Failed to create parent directory for temp file");
+        }
+        fs::write(&file_path, content).expect("Failed to create temp file for test");
+        file_path
+    }
+
+    // Tests for handle_create_file
+    #[test]
+    fn test_handle_create_file_success() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("new_file.txt");
+        let content = "Hello, world!";
+
+        let result = handle_create_file(&file_path, content, false).unwrap();
+        assert!(result.contains("successfully"));
+        assert!(file_path.exists());
+        assert_eq!(fs::read_to_string(&file_path).unwrap(), content);
+    }
+
+    #[test]
+    fn test_handle_create_file_overwrite_true() {
+        let dir = tempdir().unwrap();
+        let file_path = create_temp_file(&dir, "existing.txt", "Old content");
+        let new_content = "New content";
+
+        let result = handle_create_file(&file_path, new_content, true).unwrap();
+        assert!(result.contains("successfully"));
+        assert_eq!(fs::read_to_string(&file_path).unwrap(), new_content);
+    }
+
+    #[test]
+    fn test_handle_create_file_overwrite_false_error() {
+        let dir = tempdir().unwrap();
+        let file_path = create_temp_file(&dir, "existing.txt", "Old content");
+
+        let result = handle_create_file(&file_path, "Attempt to overwrite", false);
+        assert!(result.is_err());
+        assert!(result.err().unwrap().to_string().contains("File already exists"));
+    }
+
+    // Tests for handle_read_file
+    #[test]
+    fn test_handle_read_file_success() {
+        let dir = tempdir().unwrap();
+        let content = "Content to be read\nWith multiple lines\nAnd special chars!@#$%^&*()";
+        // The read_file_to_string_with_limit function in command_utils adds a newline if not present
+        // and the original content does not end with one and is within limits.
+        // For exact match, ensure test content aligns or trim the result.
+        // Here, we'll test with content that will be read as is.
+        let file_path = create_temp_file(&dir, "readable.txt", content);
+
+        let result = handle_read_file(&file_path).unwrap();
+        // handle_read_file uses read_file_to_string_with_limit, which might add a trailing newline
+        // if the original content doesn't have one and line limits are not hit.
+        // The provided content for `create_temp_file` will be written as is.
+        // `read_file_to_string_with_limit` reconstructs content line by line, adding `\n`.
+        // So, if `content` doesn't end with `\n`, the read version will have one more.
+        let expected_content = if content.ends_with('\n') || content.is_empty() {
+            content.to_string()
+        } else {
+            format!("{}\n", content)
+        };
+        // If the file is truncated, it will have a specific message.
+        // This test assumes no truncation.
+        let expected_content_final = if expected_content.contains("\n... (file truncated due to size or line limit)") {
+             expected_content
+        } else {
+            expected_content.trim_end_matches('\n').to_string()
+        };
+        // The current implementation of `read_file_to_string_with_limit` adds a newline to each line.
+        // and then `handle_read_file` returns that. If the original content doesn't end with newline,
+        // the read version will.
+        // Let's adjust expectation based on `read_file_to_string_with_limit` behavior.
+        // It reads lines and appends '\n'. So "text" becomes "text\n".
+        // "text\n" becomes "text\n\n" effectively if not careful.
+        // The current `read_file_to_string_with_limit` adds a `\n` after each line it reads.
+        // And if truncated, it adds a specific message.
+        // The `handle_read_file` simply returns this.
+        // Let's simplify: the test content has newlines.
+        let content_for_test = "Content to be read\nWith multiple lines\nAnd special chars!@#$%^&*()\n";
+        let file_path_for_test = create_temp_file(&dir, "readable_complex.txt", content_for_test);
+        let result_complex = handle_read_file(&file_path_for_test).unwrap();
+        assert_eq!(result_complex.trim_end(), content_for_test.trim_end());
+
+
+        let simple_content = "Simple";
+        let file_path_simple = create_temp_file(&dir, "readable_simple.txt", simple_content);
+        let result_simple = handle_read_file(&file_path_simple).unwrap();
+        assert_eq!(result_simple, format!("{}\n",simple_content));
+
+
+    }
+
+    #[test]
+    fn test_handle_read_file_not_found_error() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("non_existent.txt");
+
+        let result = handle_read_file(&file_path);
+        assert!(result.is_err());
+        assert!(result.err().unwrap().to_string().contains("File not found"));
+    }
+
+    // Tests for handle_update_file
+    #[test]
+    fn test_handle_update_file_success() {
+        let dir = tempdir().unwrap();
+        let file_path = create_temp_file(&dir, "updatable.txt", "Initial content");
+        let new_content = "Updated content";
+
+        let result = handle_update_file(&file_path, new_content).unwrap();
+        assert!(result.contains("successfully"));
+        assert_eq!(fs::read_to_string(&file_path).unwrap(), new_content);
+    }
+
+    #[test]
+    fn test_handle_update_file_not_found_error() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("non_existent_for_update.txt");
+
+        let result = handle_update_file(&file_path, "data");
+        assert!(result.is_err());
+        assert!(result.err().unwrap().to_string().contains("File not found for update"));
+    }
+
+    // Tests for handle_delete_file
+    #[test]
+    fn test_handle_delete_file_success() {
+        let dir = tempdir().unwrap();
+        let file_path = create_temp_file(&dir, "deletable_file.txt", "content");
+
+        let result = handle_delete_file(&file_path, false).unwrap();
+        assert!(result.contains("successfully"));
+        assert!(!file_path.exists());
+    }
+
+    #[test]
+    fn test_handle_delete_empty_dir_success() {
+        let dir = tempdir().unwrap();
+        let sub_dir_path = dir.path().join("empty_sub_dir");
+        fs::create_dir(&sub_dir_path).unwrap();
+
+        let result = handle_delete_file(&sub_dir_path, false).unwrap();
+        assert!(result.contains("successfully"));
+        assert!(!sub_dir_path.exists());
+    }
+
+    #[test]
+    fn test_handle_delete_non_empty_dir_recursive_true_success() {
+        let dir = tempdir().unwrap();
+        let sub_dir_path = dir.path().join("sub_dir_with_content");
+        fs::create_dir(&sub_dir_path).unwrap();
+        // create_temp_file helper needs to know the full path relative to tempdir's root for nested files.
+        create_temp_file(&dir, "sub_dir_with_content/some_file.txt", "content");
+
+        let result = handle_delete_file(&sub_dir_path, true).unwrap();
+        assert!(result.contains("successfully"));
+        assert!(!sub_dir_path.exists());
+    }
+
+    #[test]
+    fn test_handle_delete_non_empty_dir_recursive_false_error() {
+        let dir = tempdir().unwrap();
+        let sub_dir_path = dir.path().join("sub_dir_error");
+        fs::create_dir(&sub_dir_path).unwrap();
+        create_temp_file(&dir, "sub_dir_error/some_file.txt", "content");
+
+        let result = handle_delete_file(&sub_dir_path, false);
+        assert!(result.is_err());
+        let error_message = result.err().unwrap().to_string();
+        // Error message for non-empty directory without recursive delete
+        assert!(error_message.contains("Path is a non-empty directory and recursive delete is false"));
+    }
+
+    #[test]
+    fn test_handle_delete_file_not_found_error() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("non_existent_for_delete.txt");
+        let result = handle_delete_file(&file_path, false);
+        assert!(result.is_err());
+        assert!(result.err().unwrap().to_string().contains("not found for deletion"));
+    }
+
+    // Tests for handle_patch_file
+    #[test]
+    fn test_handle_patch_file_success() {
+        let dir = tempdir().unwrap();
+        let original_content = "Line 1\nLine 2\nLine 3\n";
+        let file_path = create_temp_file(&dir, "patch_target.txt", original_content);
+
+        let diff_content = "--- a/patch_target.txt\n+++ b/patch_target.txt\n@@ -1,3 +1,4 @@\n Line 1\n-Line 2\n+Line Two\n Line 3\n+Line 4\n";
+        let expected_content = "Line 1\nLine Two\nLine 3\nLine 4\n";
+
+        let result = handle_patch_file(&file_path, diff_content, "unified").unwrap();
+        assert!(result.contains("successfully"));
+        assert_eq!(fs::read_to_string(&file_path).unwrap(), expected_content);
+    }
+
+    #[test]
+    fn test_handle_patch_file_not_found_error() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("non_existent_for_patch.txt");
+        let diff_content = "--- a/file.txt\n+++ b/file.txt\n@@ -1 +1 @@\n-a\n+b\n";
+
+        let result = handle_patch_file(&file_path, diff_content, "unified");
+        assert!(result.is_err());
+        assert!(result.err().unwrap().to_string().contains("File not found for patching"));
+    }
+
+    #[test]
+    fn test_handle_patch_file_invalid_diff_error() {
+        let dir = tempdir().unwrap();
+        let file_path = create_temp_file(&dir, "patch_invalid_diff.txt", "content");
+        let diff_content = "this is not a valid diff";
+
+        let result = handle_patch_file(&file_path, diff_content, "unified");
+        assert!(result.is_err());
+        assert!(result.err().unwrap().to_string().contains("Failed to parse diff content"));
+    }
 }
