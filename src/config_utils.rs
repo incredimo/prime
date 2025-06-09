@@ -1,34 +1,14 @@
 // src/config_utils.rs
-// Manages loading of user-configurable settings like ignored paths and destructive command patterns.
+// Manages loading of user-configurable settings like destructive command patterns.
 
 use anyhow::{Context, Result};
-use glob::Pattern;
 use std::{
     fs,
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
 };
 
-const IGNORED_PATHS_FILENAME: &str = "ignored_paths.txt";
 const ASK_ME_BEFORE_PATTERNS_FILENAME: &str = "ask_me_before_patterns.txt";
-
-// Default patterns if user files are not found or empty
-pub const DEFAULT_IGNORED_PATHS: &[&str] = &[
-    "**/node_modules/**",
-    "**/target/**",
-    "**/.git/**",
-    "**/.hg/**",
-    "**/.svn/**",
-    "**/__pycache__/**",
-    "**/.DS_Store",
-    "**/*.pyc",
-    "**/*.swp",
-    "**/.idea/**",
-    "**/.vscode/**",
-    "**/build/**",
-    "**/dist/**",
-    "**/.cache/**",
-];
 
 #[cfg(target_os = "windows")]
 pub const DEFAULT_ASK_ME_BEFORE_PATTERNS: &[&str] = &[
@@ -45,7 +25,7 @@ pub const DEFAULT_ASK_ME_BEFORE_PATTERNS: &[&str] = &[
 ];
 
 #[cfg(not(target_os = "windows"))]
-const DEFAULT_ASK_ME_BEFORE_PATTERNS: &[&str] = &[
+pub const DEFAULT_ASK_ME_BEFORE_PATTERNS: &[&str] = &[
     "rm -rf",
     "rm -r",
     "mkfs",
@@ -107,25 +87,8 @@ fn load_patterns_from_file(
                 )
             })?;
         }
-        // Optionally, create the file with default patterns if it didn't exist
-        // fs::write(&file_path, default_patterns.join("\n"))
-        //     .with_context(|| format!("Failed to write default patterns to {}", file_path.display()))?;
     }
     Ok(patterns)
-}
-
-/// Loads ignored path patterns (glob).
-pub fn load_ignored_path_patterns() -> Result<Vec<Pattern>> {
-    let config_dir = get_prime_config_dir()?;
-    let string_patterns =
-        load_patterns_from_file(&config_dir, IGNORED_PATHS_FILENAME, DEFAULT_IGNORED_PATHS)?;
-
-    string_patterns
-        .iter()
-        .map(|s| {
-            Pattern::new(s).with_context(|| format!("Invalid glob pattern in ignored paths: {}", s))
-        })
-        .collect()
 }
 
 /// Loads "ask me before" (potentially destructive) command patterns (simple string contains).
@@ -144,40 +107,6 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn test_load_default_ignored_patterns_if_file_missing() {
-        let temp_config_dir = tempdir().unwrap();
-        let patterns = load_patterns_from_file(
-            temp_config_dir.path(),
-            "test_ignored.txt",
-            DEFAULT_IGNORED_PATHS,
-        )
-        .unwrap();
-        assert_eq!(patterns.len(), DEFAULT_IGNORED_PATHS.len());
-        assert!(patterns.contains(&"**/node_modules/**".to_string()));
-    }
-
-    #[test]
-    fn test_load_custom_ignored_patterns_from_file() {
-        let temp_config_dir = tempdir().unwrap();
-        let custom_patterns = ["**/custom_ignore/**", "*.log"];
-        fs::write(
-            temp_config_dir.path().join("custom_ignored.txt"),
-            custom_patterns.join("\n"),
-        )
-        .unwrap();
-
-        let patterns = load_patterns_from_file(
-            temp_config_dir.path(),
-            "custom_ignored.txt",
-            DEFAULT_IGNORED_PATHS,
-        )
-        .unwrap();
-        assert_eq!(patterns.len(), custom_patterns.len());
-        assert!(patterns.contains(&"**/custom_ignore/**".to_string()));
-        assert!(!patterns.contains(&"**/node_modules/**".to_string())); // Default should not be loaded
-    }
-
-    #[test]
     fn test_load_default_ask_me_before_patterns() {
         let temp_config_dir = tempdir().unwrap();
         let patterns = load_patterns_from_file(
@@ -187,5 +116,54 @@ mod tests {
         )
         .unwrap();
         assert_eq!(patterns.len(), DEFAULT_ASK_ME_BEFORE_PATTERNS.len());
+    }
+
+    #[test]
+    fn test_load_custom_ask_me_before_patterns_from_file() {
+        let temp_config_dir = tempdir().unwrap();
+        let custom_patterns = ["dangerous-command", "another-risky-operation"];
+        fs::write(
+            temp_config_dir.path().join("custom_ask_before.txt"),
+            custom_patterns.join("\n"),
+        )
+        .unwrap();
+
+        let patterns = load_patterns_from_file(
+            temp_config_dir.path(),
+            "custom_ask_before.txt",
+            DEFAULT_ASK_ME_BEFORE_PATTERNS,
+        )
+        .unwrap();
+        assert_eq!(patterns.len(), custom_patterns.len());
+        assert!(patterns.contains(&"dangerous-command".to_string()));
+        assert!(!patterns.contains(&"rm -rf".to_string())); // Default should not be loaded
+    }
+
+    #[test]
+    fn test_ignore_comments_and_empty_lines() {
+        let temp_config_dir = tempdir().unwrap();
+        let file_content = r#"
+# This is a comment
+dangerous-command
+
+# Another comment
+risky-operation
+"#;
+        fs::write(
+            temp_config_dir.path().join("test_with_comments.txt"),
+            file_content,
+        )
+        .unwrap();
+
+        let patterns = load_patterns_from_file(
+            temp_config_dir.path(),
+            "test_with_comments.txt",
+            DEFAULT_ASK_ME_BEFORE_PATTERNS,
+        )
+        .unwrap();
+        assert_eq!(patterns.len(), 2);
+        assert!(patterns.contains(&"dangerous-command".to_string()));
+        assert!(patterns.contains(&"risky-operation".to_string()));
+        assert!(!patterns.iter().any(|p| p.starts_with('#')));
     }
 }
