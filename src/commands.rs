@@ -8,9 +8,69 @@ use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
 use tempfile::NamedTempFile;
-
-use crate::config_utils;
+ 
 use crate::styling::STYLER;
+use crate::session::PrimeSession;
+
+/// Handles special commands from the main input loop.
+/// Returns Ok(false) if the session should exit, Ok(true) otherwise.
+pub fn handle_special_command(session: &PrimeSession, cmd_line: &str) -> anyhow::Result<bool> {
+    let parts: Vec<&str> = cmd_line.splitn(2, ' ').collect();
+    let command = parts[0].to_lowercase();
+    let args = parts.get(1).copied().unwrap_or("").trim();
+
+    match command.as_str() {
+        "clear" | "cls" => {
+            print!("\x1B[2J\x1B[1;1H");
+            std::io::stdout().flush()?;
+            Ok(true)
+        }
+        "list" => {
+            match session.list_messages() {
+                Ok(list) => {
+                    STYLER.infoln("Conversation History:");
+                    if list.is_empty() {
+                        STYLER.infoln("No messages yet.");
+                    } else {
+                        for item in list {
+                            STYLER.infoln(item);
+                        }
+                    }
+                }
+                Err(e) => STYLER.errorln(format!("Error listing messages: {}", e)),
+            }
+            Ok(true)
+        }
+        "read" => {
+            if args.is_empty() {
+                STYLER.errorln("Usage: !read <message_number>");
+            } else if let Ok(num) = args.parse::<usize>() {
+                match session.read_message(num) {
+                    Ok(msg) => println!("{}", msg),
+                    Err(e) => STYLER.errorln(format!("Error reading message {}: {}", num, e)),
+                }
+            } else {
+                STYLER.errorln(format!("Invalid message number: {}", args));
+            }
+            Ok(true)
+        }
+        "help" => {
+            STYLER.print_help();
+            Ok(true)
+        }
+        "exit" | "quit" => {
+            STYLER.infoln("Exiting Prime...");
+            Ok(false)
+        }
+        _ => {
+            STYLER.errorln(format!(
+                "Unknown command: {}{}. Type {} for available commands.",
+                "!", command, "!help"
+            ));
+            Ok(true)
+        }
+    }
+}
 
 /// Handles script execution for Prime
 pub struct CommandProcessor {
@@ -29,24 +89,12 @@ impl CommandProcessor {
         #[cfg(not(target_os = "windows"))]
         let (shell_command, shell_args) = ("sh".to_string(), vec!["-c".to_string()]);
 
-        let ask_me_before_patterns = config_utils::load_ask_me_before_patterns().unwrap_or_else(|e| {
-            eprintln!(
-                "{}",
-                STYLER.error_style(format!(
-                    "Warning: Failed to load 'ask me before' patterns: {}. Using defaults.",
-                    e
-                ))
-            );
-            config_utils::DEFAULT_ASK_ME_BEFORE_PATTERNS
-                .iter()
-                .map(|s| s.to_string())
-                .collect()
-        });
+        let ask_me_before_patterns = vec![];
 
         Self {
             shell_command,
             shell_args,
-            ask_me_before_patterns,
+            ask_me_before_patterns, 
         }
     }
 

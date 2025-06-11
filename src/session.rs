@@ -9,7 +9,6 @@ use std::time::Duration;
 
 use anyhow::{Context as AnyhowContext, Result};
 use chrono;
-use console::Style;
 use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::{Client, header};
@@ -271,15 +270,10 @@ impl PrimeSession {
         let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
         
         // Print operation feedback with enhanced styling
-        let operation_style = Style::new().cyan().bold();
-        let success_style = Style::new().green();
-        let error_style = Style::new().red();
-        let info_style = Style::new().blue();
-        
         match status {
-            "SUCCESS" => println!("{} {}", success_style.apply_to("✔"), operation_style.apply_to(operation)),
-            "FAILED" | "ERROR" => println!("{} {}", error_style.apply_to("✖"), operation_style.apply_to(operation)),
-            _ => println!("{} {}", info_style.apply_to("•"), operation_style.apply_to(operation)),
+            "SUCCESS" => println!("{} {}", STYLER.success_style("✔"), STYLER.info_style(operation)),
+            "FAILED" | "ERROR" => println!("{} {}", STYLER.error_style("✖"), STYLER.info_style(operation)),
+            _ => println!("{} {}", STYLER.info_style("•"), STYLER.info_style(operation)),
         }
         
         let message_content = format!(
@@ -374,8 +368,7 @@ impl PrimeSession {
         println!();
         self.add_prime_message(&full_response)?;
         
-        let status_style = Style::new().green();
-        println!("\n{}", status_style.apply_to("✓ Response generated"));
+        println!("\n{}", STYLER.success_style("✓ Response generated"));
         
         Ok(full_response)
     }
