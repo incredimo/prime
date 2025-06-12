@@ -1,11 +1,12 @@
 mod styling;
+mod templates;
 use std::env;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process;
 use std::sync::Arc;
 use anyhow::{Context as AnyhowContext, Result};
-use colored::Colorize;
+use parking_lot::Mutex;
 use console::Style;
 use rustyline::history::DefaultHistory;
 use rustyline::{Editor};
@@ -108,11 +109,11 @@ async fn init_prime() -> Result<Prime> {
     println!("{}", sep_style.apply_to(bar_char.repeat(70)));
 
     let session = PrimeSession::new(workspace_dir.clone(), &ollama_model, &ollama_api)?;
-    Ok(Prime { session: Arc::new(session), workspace_dir })
+    Ok(Prime { session: Arc::new(Mutex::new(session)), workspace_dir })
 }
 
 pub struct Prime {
-    session: Arc<PrimeSession>,
+    session: Arc<Mutex<PrimeSession>>,
     #[allow(dead_code)]
     workspace_dir: PathBuf,
 }
@@ -177,11 +178,15 @@ impl Prime {
             return Ok(());
         }
         
-        // Add the initial user message
-        self.session.add_user_message(initial_input)?;
         let mut current_prompt = initial_input.to_string();
         let mut iteration_count = 0;
         const MAX_ITERATIONS: usize = 10; // Safety limit to prevent infinite loops
+
+        // Get initial lock and add user message
+        {
+            let mut session = self.session.lock();
+            session.add_user_message(initial_input)?;
+        }
         
         loop {
             iteration_count += 1;
@@ -189,13 +194,15 @@ impl Prime {
             if iteration_count > MAX_ITERATIONS {
                 let error_msg = "Maximum iteration limit reached. Please try a simpler request.";
                 eprintln!("{} {}", STYLER.error_style("[ERROR]"), STYLER.error_style(error_msg));
-                self.session.add_system_message("MaxIterations", "FAILED", error_msg)?;
+                self.session.lock().add_system_message("MaxIterations", "FAILED", error_msg)?;
                 break;
             }
             
-            // Generate LLM response
+            // Generate LLM response and process commands under a single lock
             println!("\n{}", STYLER.separator_style("─".repeat(70)));
-            let llm_response = match self.session.generate_prime_response_stream(&current_prompt).await {
+            let mut session = self.session.lock();
+            
+            let llm_response = match session.generate_prime_response_stream(&current_prompt).await {
                 Ok(response) => response,
                 Err(e) => {
                     eprintln!(
@@ -207,9 +214,8 @@ impl Prime {
                 }
             };
             
-            // Process script blocks in the response
             println!("\n{}", STYLER.separator_style("─".repeat(70)));
-            let processing_result: ProcessingSessionResult = match self.session.process_commands(&llm_response).await {
+            let processing_result: ProcessingSessionResult = match session.process_commands(&llm_response).await {
                 Ok(result) => result,
                 Err(e) => {
                     eprintln!(
@@ -256,7 +262,7 @@ impl Prime {
                 );
                 
                 // Add the execution results as a user message for continuity
-                self.session.add_user_message(&current_prompt)?;
+                session.add_user_message(&current_prompt)?;
             }
         }
         
@@ -276,7 +282,7 @@ impl Prime {
                 Ok(true)
             }
             "list" => {
-                match self.session.list_messages() {
+                match self.session.lock().list_messages() {
                     Ok(list) => {
                         println!("{}", STYLER.header_style("Conversation History:"));
                         if list.is_empty() {
@@ -295,7 +301,7 @@ impl Prime {
                 if args.is_empty() {
                     eprintln!("{}", STYLER.error_style("Usage: !read <message_number>"));
                 } else if let Ok(num) = args.parse::<usize>() {
-                    match self.session.read_message(num) {
+                    match self.session.lock().read_message(num) {
                         Ok(msg) => println!("{}", msg),
                         Err(e) => eprintln!("{} {}", STYLER.error_style(format!("Error reading message {}:", num)), e),
                     }

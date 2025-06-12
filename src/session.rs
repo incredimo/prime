@@ -13,16 +13,28 @@ use console::Style;
 use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::{Client, header};
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::commands::CommandProcessor;
 use crate::styling::STYLER;
+use crate::templates::TaskTemplates;
 
 /// Represents a parsed script block
 #[derive(Debug, Clone)]
 pub struct ScriptBlock {
     pub attributes: HashMap<String, String>,
     pub content: String,
+    pub step_number: Option<usize>,  // Track multi-step operations
+    pub depends_on: Option<usize>,   // Dependencies between blocks
+}
+
+/// Represents the progress tracking of a task
+#[derive(Debug)]
+pub struct TaskProgress {
+    total_steps: usize,
+    completed_steps: usize,
+    current_task: String,
+    subtasks: Vec<(String, bool)>, // (task description, completed)
 }
 
 /// Represents the result of processing a script block
@@ -107,6 +119,8 @@ impl MarkdownParser {
         Some((ScriptBlock {
             attributes,
             content,
+            step_number: None,
+            depends_on: None,
         }, end_idx + 1))
     }
 
@@ -121,7 +135,7 @@ impl MarkdownParser {
                 
                 // Remove the class part (e.g., ".script", ".text", ".powershell")
                 let attr_str = attr_str.split_whitespace().skip_while(|s| s.starts_with('.')).collect::<Vec<&str>>().join(" ");
-                let mut chars: Vec<char> = attr_str.chars().collect();
+                let chars: Vec<char> = attr_str.chars().collect();
                 let mut i = 0;
                 
                 while i < chars.len() {
@@ -187,6 +201,56 @@ impl MarkdownParser {
 }
 
 /// Represents a session with the Prime assistant
+/// Represents environment information detected at runtime
+#[derive(Debug)]
+pub struct EnvironmentInfo {
+    os: String,
+    python_version: Option<String>,
+    pip_version: Option<String>,
+    has_sudo: bool,
+    in_venv: bool,
+    has_git: bool,
+    has_npm: bool,
+}
+
+impl PrimeSession {
+    /// Track progress for a set of script blocks
+    pub fn track_progress(&self, script_blocks: &[ScriptBlock]) -> TaskProgress {
+        let total_steps = script_blocks.iter()
+            .filter(|b| b.attributes.contains_key("execute"))
+            .count();
+            
+        TaskProgress {
+            total_steps,
+            completed_steps: 0,
+            current_task: String::new(),
+            subtasks: Vec::new(),
+        }
+    }
+    
+    /// Update progress tracking information
+    pub fn update_progress(&mut self, progress: &mut TaskProgress, description: &str, completed: bool) {
+        if completed {
+            progress.completed_steps += 1;
+        }
+        progress.current_task = description.to_string();
+        progress.subtasks.push((description.to_string(), completed));
+        
+        // Print progress update
+        let percentage = if progress.total_steps > 0 {
+            (progress.completed_steps as f64 / progress.total_steps as f64 * 100.0) as usize
+        } else {
+            0
+        };
+        
+        println!("{} Progress: {}% - {}",
+            STYLER.info_style("•"),
+            percentage,
+            description
+        );
+    }
+}
+
 pub struct PrimeSession {
     pub base_dir: PathBuf,
     pub session_id: String,
@@ -194,11 +258,16 @@ pub struct PrimeSession {
     pub message_counter: AtomicUsize,
     pub ollama_model: String,
     pub ollama_api_url: String,
-    pub command_processor: CommandProcessor,
+    command_processor: CommandProcessor,
+    templates: TaskTemplates,
     client: Client,
 }
 
 impl PrimeSession {
+    pub fn render_template(&self, template_name: &str, data: &Value) -> Result<String> {
+        self.templates.render_template(template_name, data)
+    }
+
     /// Create a new Prime session
     pub fn new(base_dir: PathBuf, ollama_model: &str, ollama_api_base: &str) -> Result<Self> {
         let session_id = format!("session_{}", chrono::Local::now().format("%Y%m%d_%H%M%S"));
@@ -229,6 +298,7 @@ impl PrimeSession {
             ollama_model: ollama_model.to_string(),
             ollama_api_url: format!("{}/api/generate", ollama_api_base.trim_end_matches('/')),
             command_processor: CommandProcessor::new(),
+            templates: TaskTemplates::new(),
             client,
         };
         
@@ -292,11 +362,12 @@ impl PrimeSession {
     }
     
     /// Generate a streamed response from Prime using the LLM
-    pub async fn generate_prime_response_stream(&self, prompt: &str) -> Result<String> {
+    pub async fn generate_prime_response_stream(&mut self, prompt: &str) -> Result<String> {
         let mut ollama_prompt_payload = String::new();
 
         // System Instructions
-        ollama_prompt_payload.push_str(&self.get_system_prompt()?);
+        let system_prompt = self.get_system_prompt()?;
+        ollama_prompt_payload.push_str(&system_prompt);
         ollama_prompt_payload.push_str("\n\n");
 
         // Recent conversation history (limit to prevent context overflow)
@@ -390,29 +461,67 @@ impl PrimeSession {
         Ok(context_str)
     }
     
-    fn get_system_prompt(&self) -> Result<String> {
-        const PROMPT_TEMPLATE: &str = include_str!("../prompts/system_prompt.md");
-        Ok(PROMPT_TEMPLATE.to_string())
+    fn get_system_prompt(&mut self) -> Result<String> {
+        let env_info = self.detect_environment();
+        let mut prompt = include_str!("../prompts/system_prompt.md").to_string();
+        
+        prompt.push_str("\n\n## Current Environment\n");
+        prompt.push_str(&format!("- OS: {}\n", env_info.os));
+        prompt.push_str(&format!("- Python: {}\n", env_info.python_version.unwrap_or_else(|| "Not found".to_string())));
+        prompt.push_str(&format!("- Pip: {}\n", env_info.pip_version.unwrap_or_else(|| "Not found".to_string())));
+        prompt.push_str(&format!("- Has sudo: {}\n", env_info.has_sudo));
+        prompt.push_str(&format!("- In virtualenv: {}\n", env_info.in_venv));
+        prompt.push_str(&format!("- Has Git: {}\n", env_info.has_git));
+        prompt.push_str(&format!("- Has npm: {}\n", env_info.has_npm));
+
+        Ok(prompt)
+    }
+
+    /// Check if a command is available and get its version output
+    fn check_command(&mut self, cmd: &str) -> Option<String> {
+        let processor = &mut self.command_processor;
+        match processor.execute_command(cmd, None) {
+            Ok((0, output)) => Some(output.lines().next().unwrap_or("").to_string()),
+            _ => None,
+        }
+    }
+
+    /// Detect current environment information
+    pub fn detect_environment(&mut self) -> EnvironmentInfo {
+        EnvironmentInfo {
+            os: std::env::consts::OS.to_string(),
+            python_version: self.check_command("python --version"),
+            pip_version: self.check_command("pip --version"),
+            has_sudo: self.check_command("sudo --version").is_some(),
+            in_venv: std::env::var("VIRTUAL_ENV").is_ok(),
+            has_git: self.check_command("git --version").is_some(),
+            has_npm: self.check_command("npm --version").is_some(),
+        }
     }
     
     /// Enhanced variable substitution
-    fn substitute_variables(&self, text: String, script_path: Option<String>, script_content: String) -> String {
-        let mut result = text;
-        
+    fn substitute_variables(&self, mut text: String, script_path: Option<String>, script_content: &str) -> String {
         // Replace variables in order of specificity
-        result = result.replace("${workspace}", &self.base_dir.to_string_lossy());
-        result = result.replace("${this.content}", &script_content);
+        text = text.replace("${workspace}", &self.base_dir.to_string_lossy());
+        text = text.replace("${this.content}", script_content);
         
         if let Some(path) = script_path {
-            result = result.replace("${this.path}", &path);
+            text = text.replace("${this.path}", &path);
         }
         
-        result
+        text
     }
     
     /// Enhanced script processing with cleaner flow
-    pub async fn process_commands(&self, response: &str) -> Result<ProcessingSessionResult> {
+    pub async fn process_commands(&mut self, response: &str) -> Result<ProcessingSessionResult> {
+        // Configure retry settings
+        const MAX_RETRIES: u32 = 3;
+        const BASE_DELAY_MS: u64 = 1000;
+
+        // Initialize progress tracking
         let script_blocks = MarkdownParser::parse_script_blocks(response);
+        let mut progress = self.track_progress(&script_blocks);
+        let mut processor = &mut self.command_processor;
         
         if script_blocks.is_empty() {
             println!("{} No script blocks found in response", STYLER.info_style("•"));
@@ -435,6 +544,31 @@ impl PrimeSession {
             println!("\n{} Processing script block {}/{}", 
                 STYLER.info_style("→"), idx + 1, script_blocks.len());
             
+            // Update step number and dependencies from attributes
+            if let Some(step_str) = block.attributes.get("step") {
+                if let Ok(step_num) = step_str.parse::<usize>() {
+                    if let Some(depends_str) = block.attributes.get("depends") {
+                        if let Ok(depends_num) = depends_str.parse::<usize>() {
+                            // Check dependency
+                            if depends_num >= step_num {
+                                println!("{} Invalid dependency: Step {} cannot depend on step {}",
+                                    STYLER.error_style("✖"), step_num, depends_num);
+                                continue;
+                            }
+                            // Check if dependency is satisfied
+                            if !progress.subtasks.get(depends_num - 1)
+                                .map(|(_, completed)| *completed)
+                                .unwrap_or(false)
+                            {
+                                println!("{} Skipping step {}: Dependency on step {} not satisfied",
+                                    STYLER.info_style("→"), step_num, depends_num);
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+
             let mut script_result = ScriptProcessingResult {
                 script_content: block.content.clone(),
                 operations_performed: Vec::new(),
@@ -447,7 +581,7 @@ impl PrimeSession {
                 success: true,
             };
             
-            let mut current_content = block.content.clone();
+            let current_content = block.content.clone();
             let mut script_file_path: Option<PathBuf> = None; // Use PathBuf for consistent path handling
             
             // Handle save operation
@@ -561,47 +695,164 @@ impl PrimeSession {
                 }
             }
             
-            // Handle execution
+            // Handle execution with retry logic
             if let Some(execute_cmd) = block.attributes.get("execute") {
                 let path_str = script_file_path.as_ref().map(|p| p.to_string_lossy().into_owned());
+                // Create owned copies before substitution
+                let command_template = execute_cmd.to_string();
                 let command = self.substitute_variables(
-                    execute_cmd.to_string(),
+                    command_template,
                     path_str,
-                    current_content.clone()
+                    &current_content
                 );
-                
-                println!("{} Executing: {}", STYLER.info_style("→"), command);
-                
-                let (exit_code, output) = self.command_processor.execute_command(&command, Some(&self.base_dir))?;
-                
-                script_result.executed = true;
-                script_result.exit_code = Some(exit_code);
-                script_result.success = script_result.success && exit_code == 0;
-                script_result.output = output.clone();
-                
-                script_result.operations_performed.push("Executed command".to_string());
-                
-                let status = if exit_code == 0 { "SUCCESS" } else { "FAILED" };
+
+                println!("{} Executing: {} [{}/{}]",
+                    STYLER.info_style("→"),
+                    command,
+                    progress.completed_steps + 1,
+                    progress.total_steps
+                );
+
+                // Update progress before execution
+                let description_str = block.attributes.get("description")
+                    .map_or("Executing command".to_string(), |s| s.to_string());
+                self.update_progress(&mut progress, &description_str, false);
+
+                let mut attempt = 0;
+                let mut last_error = None;
+                let mut success = false;
+
+                while attempt < MAX_RETRIES {
+                    if attempt > 0 {
+                        let delay = Duration::from_millis(BASE_DELAY_MS * 2_u64.pow(attempt - 1));
+                        println!("{} Retry attempt {} of {}. Waiting {:?}...",
+                            STYLER.info_style("↻"), attempt + 1, MAX_RETRIES, delay);
+                        tokio::time::sleep(delay).await;
+                    }
+
+                    match self.command_processor.execute_command(&command, Some(&self.base_dir)) {
+                        Ok((exit_code, output)) => {
+                            script_result.executed = true;
+                            script_result.exit_code = Some(exit_code);
+                            script_result.output = output.clone();
+
+                            // Check for common error patterns
+                            if exit_code != 0 {
+                                let error_patterns = [
+                                    ("pip install", "permission denied", "Use --user flag or run with elevated privileges", true),
+                                    ("pip install", "externally-managed-environment", "Use virtual environment or --break-system-packages", true),
+                                    ("npm install", "EACCES", "Fix npm permissions or use --unsafe-perm", true),
+                                    ("git clone", "Authentication failed", "Check credentials or use HTTPS URL", false),
+                                    ("command not found", "", "Ensure required tool is installed and in PATH", false),
+                                    ("cargo build", "could not find", "Run cargo update or check dependencies", true),
+                                    ("mvn", "Could not resolve dependencies", "Check Maven repository access and settings", true),
+                                    ("gradlew", "FAILURE: Build failed", "Check Gradle build errors", false),
+                                    ("python", "ModuleNotFoundError", "Install missing Python package", true),
+                                ];
+
+                                for (cmd_pattern, error_pattern, suggestion, can_retry) in error_patterns {
+                                    if command.contains(cmd_pattern) &&
+                                       output.to_lowercase().contains(&error_pattern.to_lowercase()) {
+                                        script_result.operations_performed.push(format!("Error Analysis: {}", suggestion));
+                                        if !can_retry {
+                                            attempt = MAX_RETRIES; // Skip further retries
+                                        }
+                                        break;
+                                    }
+                                }
+
+                                if attempt == MAX_RETRIES - 1 {
+                                    script_result.success = false;
+                                } else {
+                                    continue; // Try next attempt
+                                }
+                            } else {
+                                script_result.success = true;
+                                let description_str = block.attributes.get("description")
+                                    .map_or("Executing command".to_string(), |s| s.to_string());
+                                self.update_progress(&mut progress, &description_str, true);
+                                break; // Command succeeded
+                            }
+                            
+                            last_error = Some(format!("Command failed with exit code: {}", exit_code));
+                            break;
+                        }
+                        Err(e) => {
+                            last_error = Some(e.to_string());
+                            if attempt == MAX_RETRIES - 1 {
+                                script_result.success = false;
+                                script_result.operations_performed.push(format!("Error: {}", e));
+                            }
+                        }
+                    }
+                    attempt += 1;
+                }
+
+                let output = script_result.output.clone();
+                let status = if script_result.success { "SUCCESS" } else { "FAILED" };
+                let mut error_context = String::new();
+
+                if !script_result.success {
+                    error_context.push_str("\nError Analysis:\n");
+                    for op in &script_result.operations_performed {
+                        if op.starts_with("Error") {
+                            error_context.push_str(&format!("- {}\n", op));
+                        }
+                    }
+                }
+
+                if attempt > 1 {
+                    error_context.push_str(&format!("\nRetry Information:\n- Attempted {} times\n", attempt));
+                    if let Some(error) = &last_error {
+                        error_context.push_str(&format!("- Final error: {}\n", error));
+                    }
+                }
+
                 self.add_system_message(
                     "execute command",
                     status,
-                    &format!("Exit code: {}\nOutput:\n```\n{}\n```", exit_code, output)
+                    &format!(
+                        "Command: {}\nExit Code: {}\nOutput:\n```\n{}\n```{}",
+                        command,
+                        script_result.exit_code.unwrap_or(-1),
+                        output,
+                        error_context
+                    )
                 )?;
-                
-                if exit_code == 0 {
-                    execution_outputs.push(format!("✓ Command executed successfully\nOutput:\n{}", output));
+
+                if script_result.success {
+                    let retry_info = if attempt > 1 {
+                        format!(" (after {} retries)", attempt - 1)
+                    } else {
+                        String::new()
+                    };
+                    script_result.operations_performed.push(
+                        format!("Command succeeded{}", retry_info)
+                    );
+                    execution_outputs.push(format!(
+                        "✓ Command executed successfully{}\nOutput:\n{}",
+                        retry_info,
+                        output
+                    ));
                 } else {
-                    execution_outputs.push(format!("✖ Command failed (exit code: {})\nOutput:\n{}", exit_code, output));
+                    execution_outputs.push(format!(
+                        "✖ Command failed after {} attempt(s)\nOutput:\n{}\nError Context:{}",
+                        attempt,
+                        output,
+                        error_context
+                    ));
                 }
+                
             }
             
             // Handle return value
             if let Some(return_template) = block.attributes.get("return") {
                 let path_str = script_file_path.as_ref().map(|p| p.to_string_lossy().into_owned());
+                let template = return_template.to_string();
                 let return_value = self.substitute_variables(
-                    return_template.to_string(),
+                    template,
                     path_str,
-                    current_content.clone()
+                    &current_content
                 );
                 script_result.return_value = Some(return_value.clone());
                 script_result.operations_performed.push(format!("Return: {}", return_value));
