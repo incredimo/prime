@@ -4,6 +4,101 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use anyhow::Result;
 use serde_json::Value;
+use once_cell::sync::Lazy;
+use crate::styling::STYLER;
+
+pub static LOG: Lazy<Logger> = Lazy::new(|| Logger::new());
+
+pub struct Logger {
+    debug_logger: DebugLogger,
+}
+
+impl Logger {
+    fn new() -> Self {
+        Self {
+            debug_logger: DebugLogger::new(true, None, LogLevel::Info),
+        }
+    }
+
+    // Command execution logging
+    pub fn executing(&self, command: impl std::fmt::Display, pwd: impl std::fmt::Display) {
+        println!("{}", STYLER.executing_command_style(pwd, command));
+    }
+
+    // Success messages
+    pub fn success(&self, msg: impl std::fmt::Display) {
+        println!(
+            "{} {}",
+            STYLER.success_style("[OK]"),
+            STYLER.success_style(msg)
+        );
+    }
+
+    // Error messages
+    pub fn error(&self, msg: impl std::fmt::Display) {
+        eprintln!(
+            "{} {}",
+            STYLER.error_style("[ERROR]"),
+            STYLER.error_style(msg)
+        );
+    }
+
+    // Warning messages
+    pub fn warning(&self, msg: impl std::fmt::Display) {
+        println!(
+            "{} {}",
+            STYLER.warning_style("[WARN]"),
+            STYLER.warning_style(msg)
+        );
+    }
+
+    // Info messages
+    pub fn info(&self, msg: impl std::fmt::Display) {
+        println!(
+            "{} {}",
+            STYLER.info_style("[INFO]"),
+            STYLER.info_style(msg)
+        );
+    }
+
+    // Command output preview
+    pub fn command_output(&self, output: &str) {
+        if !output.trim().is_empty() {
+            let preview_lines = 5;
+            let lines: Vec<&str> = output.lines().collect();
+            let preview = lines.iter().take(preview_lines).cloned().collect::<Vec<&str>>().join("\n");
+            
+            println!("{}", STYLER.dim_gray_style("Output preview:"));
+            println!("{}", STYLER.dim_gray_style(&preview));
+            
+            if lines.len() > preview_lines {
+                println!(
+                    "{}",
+                    STYLER.dim_gray_style(format!(
+                        "... ({} more lines, full output saved in conversation)",
+                        lines.len() - preview_lines
+                    ))
+                );
+            }
+        }
+    }
+
+    // Header messages
+    pub fn header(&self, msg: impl std::fmt::Display) {
+        println!("{}", STYLER.header_style(msg));
+    }
+
+    // Command status
+    pub fn command_status(&self, exit_code: i32) {
+        println!(
+            "{}",
+            STYLER.dim_gray_style(format!(
+                "Command completed with exit code: {}",
+                exit_code
+            ))
+        );
+    }
+}
 
 pub struct DebugLogger {
     enabled: bool,
@@ -11,7 +106,7 @@ pub struct DebugLogger {
     log_level: LogLevel,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LogLevel {
     Error,
     Warn,
@@ -96,9 +191,6 @@ impl DebugLogger {
             
             file.write_all(entry.as_bytes())?;
         }
-        
-        // Also print to stderr for immediate visibility
-        eprintln!("{}", entry);
         
         Ok(())
     }

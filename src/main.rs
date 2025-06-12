@@ -1,12 +1,12 @@
 mod styling;
-mod templates;
+mod logging;
 use std::env;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process;
 use std::sync::Arc;
 use anyhow::{Context as AnyhowContext, Result};
-use parking_lot::Mutex;
+use colored::Colorize;
 use console::Style;
 use rustyline::history::DefaultHistory;
 use rustyline::{Editor};
@@ -16,13 +16,19 @@ mod session;
 mod commands;
 mod terminal_ui;
 mod config_utils;
+mod memory;
+mod environment;
 
-use session::{PrimeSession, ProcessingSessionResult}; // Import ProcessingSessionResult
+use session::{PrimeSession, ProcessingSessionResult};
 use terminal_ui::PrimeHelper;
 use crate::styling::STYLER;
+use crate::logging::LOG;
 
 const APP_NAME: &str = "prime";
-const VERSION: &str = "1.0.0";
+const VERSION: &str = "2.0.0";
+const MAX_ITERATIONS: usize = 5;
+const MAX_FAILURES_BEFORE_HELP: usize = 2;
+
 use terminal_ui::BANNER;
  
 #[tokio::main]
@@ -47,30 +53,18 @@ async fn main() -> Result<()> {
     let prime = match init_prime().await {
         Ok(prime) => prime,
         Err(e) => {
-            eprintln!(
-                "{} {}",
-                STYLER.error_style("[ERROR]"),
-                STYLER.error_style(format!("Initialization error: {}", e))
-            );
+            LOG.error(format!("Initialization error: {}", e));
             process::exit(1);
         }
     };
 
     match prime.run().await {
         Ok(_) => {
-            println!(
-                "{} {}",
-                STYLER.success_style("[OK]"),
-                STYLER.success_style("Prime session ended successfully")
-            );
+            LOG.success("Prime session ended successfully");
             Ok(())
         }
         Err(e) => {
-            eprintln!(
-                "{} {}",
-                STYLER.error_style("[ERROR]"),
-                STYLER.error_style(format!("Runtime error: {}", e))
-            );
+            LOG.error(format!("Runtime error: {}", e));
             process::exit(1);
         }
     }
@@ -106,16 +100,39 @@ async fn init_prime() -> Result<Prime> {
         label_style.apply_to("workspace"),
         value_style.apply_to(&workspace_dir.display().to_string())
     );
+    
+    // Initialize and display environment info
+    let session = PrimeSession::new(workspace_dir.clone(), &ollama_model, &ollama_api)?;
+    let env_info = session.detect_environment();
+    
+    println!(
+        "  {} {:<18} {}",
+        arrow_style.apply_to("•"),
+        label_style.apply_to("python"),
+        value_style.apply_to(&env_info.python_version.unwrap_or_else(|| "Not found".to_string()))
+    );
+    println!(
+        "  {} {:<18} {}",
+        arrow_style.apply_to("•"),
+        label_style.apply_to("virtual env"),
+        value_style.apply_to(if env_info.in_venv { "Yes" } else { "No" })
+    );
+    
     println!("{}", sep_style.apply_to(bar_char.repeat(70)));
 
-    let session = PrimeSession::new(workspace_dir.clone(), &ollama_model, &ollama_api)?;
-    Ok(Prime { session: Arc::new(Mutex::new(session)), workspace_dir })
+    Ok(Prime { 
+        session: Arc::new(session), 
+        workspace_dir,
+        failure_count: 0,
+        current_task_iterations: 0,
+    })
 }
 
 pub struct Prime {
-    session: Arc<Mutex<PrimeSession>>,
-    #[allow(dead_code)]
+    session: Arc<PrimeSession>,
     workspace_dir: PathBuf,
+    failure_count: usize,
+    current_task_iterations: usize,
 }
 
 impl Prime {
@@ -135,7 +152,7 @@ impl Prime {
                         continue;
                     }
                     if input.eq_ignore_ascii_case("exit") || input.eq_ignore_ascii_case("quit") {
-                        println!("{}", STYLER.info_style("Exiting Prime..."));
+                        LOG.info("Exiting Prime...");
                         break;
                     }
                     if input.starts_with('!') {
@@ -145,27 +162,24 @@ impl Prime {
                         continue;
                     }
 
-                    if let Err(e) = self.process_user_input(input).await {
-                        eprintln!(
-                            "{} {}",
-                            STYLER.error_style("[ERROR]"),
-                            STYLER.error_style(format!("Error processing input: {}", e))
-                        );
+                    // Reset counters for new task
+                    let mut prime_mut = self.clone_for_task();
+                    prime_mut.failure_count = 0;
+                    prime_mut.current_task_iterations = 0;
+                    
+                    if let Err(e) = prime_mut.process_user_input(input).await {
+                        LOG.error(format!("Error processing input: {}", e));
                     }
                 }
                 Err(ReadlineError::Interrupted) => {
-                    println!("{}", STYLER.warning_style("Interrupted. Type 'exit' or Ctrl-D to quit."));
+                    LOG.warning("Interrupted. Type 'exit' or Ctrl-D to quit.");
                 }
                 Err(ReadlineError::Eof) => {
-                    println!("{}", STYLER.info_style("End of input. Goodbye!"));
+                    LOG.info("End of input. Goodbye!");
                     break;
                 }
                 Err(err) => {
-                    eprintln!(
-                        "{} {}",
-                        STYLER.error_style("[ERROR]"),
-                        STYLER.error_style(format!("Input error: {}", err))
-                    );
+                    LOG.error(format!("Input error: {}", err));
                     break;
                 }
             }
@@ -173,101 +187,170 @@ impl Prime {
         Ok(())
     }
 
-    async fn process_user_input(&self, initial_input: &str) -> Result<()> {
+    fn clone_for_task(&self) -> Prime {
+        Prime {
+            session: Arc::clone(&self.session),
+            workspace_dir: self.workspace_dir.clone(),
+            failure_count: 0,
+            current_task_iterations: 0,
+        }
+    }
+
+    async fn process_user_input(&mut self, initial_input: &str) -> Result<()> {
         if initial_input.trim().is_empty() {
             return Ok(());
         }
         
+        // Add the initial user message
+        self.session.add_user_message(initial_input)?;
         let mut current_prompt = initial_input.to_string();
-        let mut iteration_count = 0;
-        const MAX_ITERATIONS: usize = 10; // Safety limit to prevent infinite loops
-
-        // Get initial lock and add user message
-        {
-            let mut session = self.session.lock();
-            session.add_user_message(initial_input)?;
-        }
+        let mut previous_result: Option<ProcessingSessionResult> = None;
         
         loop {
-            iteration_count += 1;
+            self.current_task_iterations += 1;
             
-            if iteration_count > MAX_ITERATIONS {
-                let error_msg = "Maximum iteration limit reached. Please try a simpler request.";
-                eprintln!("{} {}", STYLER.error_style("[ERROR]"), STYLER.error_style(error_msg));
-                self.session.lock().add_system_message("MaxIterations", "FAILED", error_msg)?;
+            if self.current_task_iterations > MAX_ITERATIONS {
+                let error_msg = "Maximum iteration limit reached. The task might be too complex. Try breaking it down into smaller steps.";
+                LOG.error(error_msg);
+                self.session.add_system_message("MaxIterations", "FAILED", error_msg)?;
                 break;
             }
             
-            // Generate LLM response and process commands under a single lock
-            println!("\n{}", STYLER.separator_style("─".repeat(70)));
-            let mut session = self.session.lock();
+            // Check if we should ask for help
+            if self.failure_count >= MAX_FAILURES_BEFORE_HELP {
+                println!("\n{} Multiple attempts have failed. Would you like to:", 
+                    STYLER.warning_style("⚠"));
+                println!("  1. Let Prime try a different approach");
+                println!("  2. Provide additional context");
+                println!("  3. Skip this task");
+                println!("  4. Continue trying");
+                
+                print!("Choose (1-4): ");
+                io::stdout().flush()?;
+                
+                let mut choice = String::new();
+                io::stdin().read_line(&mut choice)?;
+                
+                match choice.trim() {
+                    "1" => {
+                        current_prompt = "The previous approaches failed. Please try a completely different method.".to_string();
+                        self.failure_count = 0; // Reset failure count
+                    },
+                    "2" => {
+                        print!("Additional context: ");
+                        io::stdout().flush()?;
+                        let mut context = String::new();
+                        io::stdin().read_line(&mut context)?;
+                        current_prompt = context.trim().to_string();
+                        self.failure_count = 0;
+                    },
+                    "3" => {
+                        println!("{}", STYLER.info_style("Skipping task."));
+                        break;
+                    },
+                    _ => {
+                        // Continue with current approach
+                    }
+                }
+            }
             
-            let llm_response = match session.generate_prime_response_stream(&current_prompt).await {
+            // Generate LLM response with context-aware prompt
+            println!("\n{}", STYLER.separator_style("─".repeat(70)));
+            let prompt = self.session.build_context_aware_prompt(&current_prompt, previous_result.as_ref());
+            let llm_response = match self.session.generate_prime_response_stream(&prompt).await {
                 Ok(response) => response,
                 Err(e) => {
-                    eprintln!(
-                        "{} {}",
-                        STYLER.error_style("[ERROR]"),
-                        STYLER.error_style(format!("Failed to generate response: {}", e))
-                    );
+                    LOG.error(format!("Failed to generate response: {}", e));
                     return Err(e);
                 }
             };
             
+            // Process script blocks in the response
             println!("\n{}", STYLER.separator_style("─".repeat(70)));
-            let processing_result: ProcessingSessionResult = match session.process_commands(&llm_response).await {
+            let processing_result = match self.session.process_commands(&llm_response).await {
                 Ok(result) => result,
                 Err(e) => {
-                    eprintln!(
-                        "{} {}",
-                        STYLER.error_style("[ERROR]"),
-                        STYLER.error_style(format!("Error processing script blocks: {}", e))
-                    );
+                    LOG.error(format!("Error processing script blocks: {}", e));
                     return Err(e);
                 }
             };
+            
+            // Update failure count
+            let current_iteration_failed = processing_result.script_results.iter().any(|r| !r.success);
+            if current_iteration_failed {
+                self.failure_count += 1;
+            } else {
+                self.failure_count = 0; // Reset on success
+            }
             
             // Determine next action based on processing results
             if processing_result.has_completed {
                 // Task is marked as completed
                 if let Some(final_msg) = processing_result.final_message {
-                    println!("\n{} {}", 
-                        STYLER.success_style("✓ Task completed:"), 
-                        STYLER.bold_white_style(final_msg)
-                    );
+                    LOG.success(format!("Task completed: {}", final_msg));
                 } else {
-                    println!("\n{}", STYLER.success_style("✓ Task completed successfully"));
+                    LOG.success("Task completed successfully");
                 }
                 break;
             } else if processing_result.script_results.is_empty() {
-                // No script blocks found - conversation ends naturally
-                println!("{}", STYLER.info_style("No script blocks found. Conversation complete."));
-                break;
+                // No script blocks found - check if it's a question or conversation end
+                if llm_response.ends_with('?') {
+                    LOG.info("Waiting for your response...");
+                    break; // Let user provide input
+                } else {
+                    LOG.info("Response complete.");
+                    break;
+                }
             } else {
-                // Script blocks were executed - send results back to LLM
+                // Script blocks were executed - prepare feedback
                 let all_successful = processing_result.script_results.iter().all(|r| r.success);
                 
                 if all_successful {
-                    println!("\n{} Sending execution results back to Prime...", 
-                        STYLER.info_style("→"));
+                    LOG.info("Sending execution results back to Prime...");
                 } else {
-                    println!("\n{} Some operations failed. Sending error details to Prime for correction...", 
-                        STYLER.warning_style("⚠"));
+                    LOG.warning("Some operations failed. Sending error details to Prime for correction...");
                 }
                 
-                // Prepare the next prompt with execution results
-                current_prompt = format!(
-                    "EXECUTION RESULTS:\n\n{}\n\nPlease analyze these results and provide your next response. If the task is complete, use completed=\"true\" in your final script block.",
-                    processing_result.execution_summary
-                );
+                // Prepare focused error feedback
+                current_prompt = self.create_concise_feedback(&processing_result);
+                
+                // Store result for next iteration
+                previous_result = Some(processing_result);
                 
                 // Add the execution results as a user message for continuity
-                session.add_user_message(&current_prompt)?;
+                self.session.add_user_message(&current_prompt)?;
             }
         }
         
         println!("\n{}", STYLER.separator_style("─".repeat(70)));
         Ok(())
+    }
+    
+    fn create_concise_feedback(&self, result: &ProcessingSessionResult) -> String {
+        let mut feedback = String::new();
+        
+        // Focus on failures with key information only
+        for script_result in &result.script_results {
+            if !script_result.success {
+                if let Some(exit_code) = script_result.exit_code {
+                    let key_error = self.session.extract_key_error(&script_result.output);
+                    feedback.push_str(&format!(
+                        "Command failed (exit {}): {}\n", 
+                        exit_code, 
+                        key_error
+                    ));
+                }
+            }
+        }
+        
+        if feedback.is_empty() {
+            // All successful
+            feedback.push_str("All operations completed successfully. Continue with next step.");
+        } else {
+            feedback.push_str("\nProvide a simple fix for the above error.");
+        }
+        
+        feedback
     }
 
     fn handle_special_command(&self, cmd_line: &str) -> Result<bool> {
@@ -282,52 +365,81 @@ impl Prime {
                 Ok(true)
             }
             "list" => {
-                match self.session.lock().list_messages() {
+                match self.session.list_messages() {
                     Ok(list) => {
-                        println!("{}", STYLER.header_style("Conversation History:"));
+                        LOG.header("Conversation History:");
                         if list.is_empty() {
-                            println!("{}", STYLER.info_style("  No messages yet."));
+                            LOG.info("  No messages yet.");
                         } else {
                             for item in list {
                                 println!("  {}", item);
                             }
                         }
                     }
-                    Err(e) => eprintln!("{} {}", STYLER.error_style("Error listing messages:"), e),
+                    Err(e) => LOG.error(format!("Error listing messages: {}", e)),
                 }
                 Ok(true)
             }
             "read" => {
                 if args.is_empty() {
-                    eprintln!("{}", STYLER.error_style("Usage: !read <message_number>"));
+                    LOG.error("Usage: !read <message_number>");
                 } else if let Ok(num) = args.parse::<usize>() {
-                    match self.session.lock().read_message(num) {
+                    match self.session.read_message(num) {
                         Ok(msg) => println!("{}", msg),
-                        Err(e) => eprintln!("{} {}", STYLER.error_style(format!("Error reading message {}:", num)), e),
+                        Err(e) => LOG.error(format!("Error reading message {}: {}", num, e)),
                     }
                 } else {
-                    eprintln!("{} Invalid message number: {}", STYLER.error_style("Error:"), args);
+                    LOG.error(format!("Invalid message number: {}", args));
+                }
+                Ok(true)
+            }
+            "env" => {
+                let env_info = self.session.detect_environment();
+                LOG.header("Environment Information:");
+                println!("  {:<20} {}", STYLER.info_style("OS:"), env_info.os);
+                println!("  {:<20} {}", STYLER.info_style("Python:"), env_info.python_version.unwrap_or_else(|| "Not found".to_string()));
+                println!("  {:<20} {}", STYLER.info_style("Pip:"), env_info.pip_version.unwrap_or_else(|| "Not found".to_string()));
+                println!("  {:<20} {}", STYLER.info_style("Virtual Env:"), if env_info.in_venv { "Yes" } else { "No" });
+                println!("  {:<20} {}", STYLER.info_style("Git:"), if env_info.has_git { "Yes" } else { "No" });
+                println!("  {:<20} {}", STYLER.info_style("NPM:"), if env_info.has_npm { "Yes" } else { "No" });
+                Ok(true)
+            }
+            "memory" => {
+                if let Some(memory_type) = match args {
+                    "short" => Some("short"),
+                    "long" => Some("long"),
+                    "all" | "" => Some("all"),
+                    _ => None,
+                } {
+                    match self.session.memory_manager.read_memory(Some(memory_type)) {
+                        Ok(content) => println!("{}", content),
+                        Err(e) => LOG.error(format!("Error reading memory: {}", e)),
+                    }
+                } else {
+                    LOG.error("Usage: !memory [short|long|all]");
                 }
                 Ok(true)
             }
             "help" => {
-                println!("{}", STYLER.header_style("Prime Assistant - Enhanced Terminal AI"));
+                println!("{}", STYLER.header_style("Prime Assistant v2.0 - Smart Terminal AI"));
                 println!();
                 println!("{}", STYLER.info_style("Prime helps you accomplish tasks by executing code and managing files."));
                 println!("{}", STYLER.info_style("Simply describe what you want to do, and Prime will create and execute the necessary scripts."));
                 println!();
-                println!("{}", STYLER.header_style("Available Special Commands:"));
+                LOG.header("Available Special Commands:");
                 println!("  {:<20} - Show this help message", STYLER.command_style_alt("!help"));
                 println!("  {:<20} - List all messages in the current session", STYLER.command_style_alt("!list"));
                 println!("  {:<20} - Read a specific message by its number", STYLER.command_style_alt("!read <number>"));
+                println!("  {:<20} - Show environment information", STYLER.command_style_alt("!env"));
+                println!("  {:<20} - View memory [short|long|all]", STYLER.command_style_alt("!memory [type]"));
                 println!("  {:<20} - Clear the terminal screen", STYLER.command_style_alt("!clear | !cls"));
                 println!("  {:<20} - Exit Prime", STYLER.command_style_alt("!exit | !quit"));
                 println!();
                 println!("{}", STYLER.header_style("Examples:"));
-                println!("  {} Create a Python script that calculates prime numbers", STYLER.dim_gray_style("•"));
-                println!("  {} What files are in my current directory?", STYLER.dim_gray_style("•"));
-                println!("  {} Download the latest data from my API and save it as JSON", STYLER.dim_gray_style("•"));
-                println!("  {} Create a backup of my important files", STYLER.dim_gray_style("•"));
+                println!("  {} Install a Python package", STYLER.dim_gray_style("•"));
+                println!("  {} Create a new project structure", STYLER.dim_gray_style("•"));
+                println!("  {} Download and process data", STYLER.dim_gray_style("•"));
+                println!("  {} Set up a development environment", STYLER.dim_gray_style("•"));
                 Ok(true)
             }
             "exit" | "quit" => {

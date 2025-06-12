@@ -6,11 +6,12 @@ use rustyline::hint::Hinter;
 use rustyline::validate::{ValidationContext, ValidationResult, Validator};
 use rustyline::Helper;
 use rustyline::Context as RustylineContext;
+
 pub const BANNER: &str = r#"
-   [38;2;230;230;230m██[0m[38;2;230;230;230m██[0m[38;2;230;230;230m██[0m [38;2;230;230;230m██[0m[38;2;63;81;181m██[0m[38;2;33;150;243m██[0m   [38;2;3;169;244m██[0m [38;2;0;150;136m██[0m[38;2;76;175;80m██[0m[38;2;205;220;57m██[0m[38;2;255;193;7m██[0m   [38;2;255;152;0m██[0m[38;2;255;87;34m██[0m[38;2;244;67;54m██[0m 
- [38;2;33;150;243m██[0m    [38;2;3;169;244m██[0m [38;2;0;150;136m██[0m    [38;2;76;175;80m██[0m [38;2;205;220;57m██[0m [38;2;255;193;7m██[0m  [38;2;255;152;0m██[0m  [38;2;255;87;34m██[0m [38;2;244;67;54m██[0m     
- [38;2;230;230;230m██[0m[38;2;230;230;230m██[0m[38;2;63;81;181m██[0m   [38;2;33;150;243m██[0m[38;2;3;169;244m██[0m[38;2;0;150;136m██[0m   [38;2;76;175;80m██[0m [38;2;205;220;57m██[0m  [38;2;255;193;7m██[0m  [38;2;255;152;0m██[0m [38;2;255;87;34m██[0m[38;2;244;67;54m██[0m   
- [38;2;63;81;181m██[0m       [38;2;33;150;243m██[0m    [38;2;3;169;244m██[0m [38;2;0;150;136m██[0m [38;2;76;175;80m██[0m  [38;2;205;220;57m██[0m  [38;2;255;193;7m██[0m [38;2;255;152;0m██[0m[38;2;255;87;34m██[0m[38;2;244;67;54m██[0m "#;
+   [38;2;230;230;230m██[0m[38;2;230;230;230m██[0m[38;2;230;230;230m██[0m [38;2;230;230;230m██[0m[38;2;63;81;181m██[0m[38;2;33;150;243m██[0m   [38;2;3;169;244m██[0m [38;2;0;150;136m██[0m[38;2;76;175;80m██[0m[38;2;205;220;57m██[0m[38;2;255;193;7m██[0m   [38;2;255;152;0m██[0m[38;2;255;87;34m██[0m[38;2;244;67;54m██[0m 
+ [38;2;33;150;243m██[0m    [38;2;3;169;244m██[0m [38;2;0;150;136m██[0m    [38;2;76;175;80m██[0m [38;2;205;220;57m██[0m [38;2;255;193;7m██[0m  [38;2;255;152;0m██[0m  [38;2;255;87;34m██[0m [38;2;244;67;54m██[0m     
+ [38;2;230;230;230m██[0m[38;2;230;230;230m██[0m[38;2;63;81;181m██[0m   [38;2;33;150;243m██[0m[38;2;3;169;244m██[0m[38;2;0;150;136m██[0m   [38;2;76;175;80m██[0m [38;2;205;220;57m██[0m  [38;2;255;193;7m██[0m  [38;2;255;152;0m██[0m [38;2;255;87;34m██[0m[38;2;244;67;54m██[0m   
+ [38;2;63;81;181m██[0m       [38;2;33;150;243m██[0m    [38;2;3;169;244m██[0m [38;2;0;150;136m██[0m [38;2;76;175;80m██[0m  [38;2;205;220;57m██[0m  [38;2;255;193;7m██[0m [38;2;255;152;0m██[0m[38;2;255;87;34m██[0m[38;2;244;67;54m██[0m "#;
 
 pub struct PrimeHelper {
     app_name: String,
@@ -27,7 +28,7 @@ impl PrimeHelper {
 impl Helper for PrimeHelper {}
 
 impl Highlighter for PrimeHelper {
-    fn highlight_prompt<'b, 's: 'b, 'p: 'b>(&self, prompt: &'p str, default: bool) -> Cow<'b, str> {
+    fn highlight_prompt<'b, 's: 'b, 'p: 'b>(&'s self, prompt: &'p str, default: bool) -> Cow<'b, str> {
         let _ = default;
         Cow::Owned(
             STYLER.prompt_style(format!("{}", prompt)).to_string()
@@ -51,7 +52,7 @@ impl Highlighter for PrimeHelper {
 
             let rest = line[first_word.len()..].to_string();
             if !rest.is_empty() {
-                if first_word == "!memory" || first_word == "!read" {
+                if first_word == "!memory" || first_word == "!read" || first_word == "!env" {
                     styled_line.push_str(&STYLER.success_style(rest).to_string());
                 } else {
                     styled_line.push_str(&rest);
@@ -60,6 +61,11 @@ impl Highlighter for PrimeHelper {
             return Cow::Owned(styled_line);
         }
         Cow::Borrowed(line)
+    }
+
+    fn highlight_char(&self, line: &str, _pos: usize) -> bool {
+        // Check if line needs highlighting
+        line.starts_with('!')
     }
 
     fn highlight_candidate<'c>(&self, candidate: &'c str, _completion: rustyline::CompletionType) -> Cow<'c, str> {
@@ -96,7 +102,7 @@ impl Hinter for PrimeHelper {
                 ("!", 1) => Some(" type command e.g. help, list, exit".to_string()),
                 (cmd, 1) => {
                     let cmd_part = &cmd[1..];
-                    let special_commands = ["help", "memory", "list", "read", "clear", "cls", "exit", "quit"];
+                    let special_commands = ["help", "memory", "list", "read", "clear", "cls", "env", "exit", "quit"];
                     special_commands.iter()
                         .find(|&template| template.starts_with(cmd_part) && cmd_part.len() < template.len())
                         .map(|template| template[cmd_part.len()..].to_string())
@@ -140,7 +146,7 @@ impl Completer for PrimeHelper {
             return Ok((0, Vec::new()));
         }
 
-        let special_commands = ["!help", "!memory", "!list", "!read", "!clear", "!cls", "!exit", "!quit"];
+        let special_commands = ["!help", "!memory", "!list", "!read", "!clear", "!cls", "!env", "!exit", "!quit"];
         let memory_args = ["short", "long", "all"];
         let parts: Vec<&str> = line[..pos].split_whitespace().collect();
 

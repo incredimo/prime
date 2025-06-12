@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use chrono;
+use chrono::{self, DateTime, Local, TimeZone, NaiveDateTime};
 
 /// Manages Prime's memory files
 pub struct MemoryManager {
@@ -194,7 +194,45 @@ impl MemoryManager {
             }
         }
         
+        // Remove duplicates
+        categories.sort();
+        categories.dedup();
+        
         Ok(categories)
+    }
+    
+    /// Get memory summary for LLM context
+    pub fn get_memory_summary(&self) -> Result<String> {
+        let mut summary = String::new();
+        
+        // Get categories and recent entries
+        if let Ok(categories) = self.get_categories(None) {
+            if !categories.is_empty() {
+                summary.push_str("## Known Categories:\n");
+                for cat in &categories {
+                    summary.push_str(&format!("- {}\n", cat));
+                }
+                summary.push_str("\n");
+            }
+        }
+        
+        // Get recent entries from short-term memory
+        if let Ok(short_term) = self.read_memory(Some("short")) {
+            let entries: Vec<&str> = short_term.lines()
+                .filter(|l| l.starts_with("- "))
+                .rev()
+                .take(5)
+                .collect();
+            
+            if !entries.is_empty() {
+                summary.push_str("## Recent Context:\n");
+                for entry in entries.into_iter().rev() {
+                    summary.push_str(&format!("{}\n", entry));
+                }
+            }
+        }
+        
+        Ok(summary)
     }
 }
 
@@ -242,9 +280,9 @@ pub mod memory_utils {
             let timestamp_str = &entry[pos + 8..];
             if let Some(end_pos) = timestamp_str.find(')') {
                 let timestamp = &timestamp_str[..end_pos];
-                return chrono::DateTime::parse_from_str(timestamp, "%Y-%m-%d %H:%M:%S")
+                return chrono::NaiveDateTime::parse_from_str(timestamp, "%Y-%m-%d %H:%M:%S")
                     .ok()
-                    .map(|dt| dt.with_timezone(&chrono::Local));
+                    .and_then(|dt| chrono::Local.from_local_datetime(&dt).single());
             }
         }
         
