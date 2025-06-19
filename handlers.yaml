@@ -1,0 +1,15 @@
+# Maps annotation names to execution templates
+# {code} will be substituted with the block's contents.
+
+shell:
+  runner: subprocess
+  template: "{code}"
+
+python:
+  runner: subprocess
+  template: "python3 - <<'PYCODE'\n{code}\nPYCODE"
+
+# You can add more handlers as needed, for example:
+# docker:
+#   runner: subprocess
+#   template: "docker run --rm alpine sh -c '{code}'"

@@ -1,0 +1,7 @@
+# LLM’s persistent memory store (read/write via annotated blocks).
+# Initialize any long‑term state here.
+
+# Example:
+# conversations:
+#   topic: orchestration
+#   last_reviewed: 2025-06-19T15:10:00Z
