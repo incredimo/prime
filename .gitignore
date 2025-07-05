@@ -19,3 +19,6 @@ Cargo.lock
 
 # Prime specific
 .prime/
+
+/conversations/
+/memory/
