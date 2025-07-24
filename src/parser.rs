@@ -17,7 +17,7 @@
 //! ```
 //! ```
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use regex::Regex;
 
 #[derive(Debug, PartialEq, Clone)]
@@ -26,6 +26,8 @@ pub enum ToolCall {
     ReadFile { path: String, lines: Option<(usize, usize)> },
     WriteFile { path: String, content: String, append: bool },
     ListDir { path: String },
+    WriteMemory { memory_type: String, content: String },
+    ClearMemory { memory_type: String },
 }
 
 #[derive(Debug, Default)]
@@ -57,10 +59,10 @@ fn parse_read_args(args_str: &str) -> Result<(String, Option<(usize, usize)>)> {
         if parts.len() == 2 {
             let start = parts[0]
                 .parse::<usize>()
-                .map_err(|_| anyhow!("Invalid start line number"))?;
+                .context(format!("Invalid start line number: {}", parts[0]))?;
             let end = parts[1]
                 .parse::<usize>()
-                .map_err(|_| anyhow!("Invalid end line number"))?;
+                .context(format!("Invalid end line number: {}", parts[1]))?;
             return Ok((path, Some((start, end))));
         } else {
             return Err(anyhow!("Invalid lines format. Expected start-end"));
@@ -73,7 +75,8 @@ pub fn parse_llm_response(input: &str) -> Result<ParsedResponse> {
     let mut resp = ParsedResponse::default();
 
     // 1️⃣ Extract fenced action block – (?s) makes . match newlines
-    let fence_re = Regex::new(r"(?s)```[ \t]*primeactions[ \t]*\n(.*?)```")?;
+    let fence_re = Regex::new(r"(?s)```[ \t]*primeactions[ \t]*\n(.*?)```")
+        .map_err(|e| anyhow::anyhow!("Failed to compile regex for parsing primeactions block: {}", e))?;
     let Some(caps) = fence_re.captures(input) else {
         // No action block – treat whole message as natural text
         resp.natural_language = input.trim().to_string();
@@ -109,6 +112,26 @@ pub fn parse_llm_response(input: &str) -> Result<ParsedResponse> {
             "read_file" => {
                 let (path, lines) = parse_read_args(args_str)?;
                 ToolCall::ReadFile { path, lines }
+            }
+            "write_memory" => {
+                let mut parts = args_str.splitn(2, ' ');
+                let memory_type = parts.next().unwrap_or("").to_string();
+                let mut content_lines = Vec::new();
+                while let Some(cl) = lines_iter.next() {
+                    if cl.trim() == "EOF_PRIME" {
+                        break;
+                    }
+                    content_lines.push(cl);
+                }
+                ToolCall::WriteMemory {
+                    memory_type,
+                    content: content_lines.join("\n"),
+                }
+            }
+            "clear_memory" => {
+                ToolCall::ClearMemory {
+                    memory_type: args_str.to_string(),
+                }
             }
             "write_file" => {
                 let (path, append) = parse_write_args(args_str);

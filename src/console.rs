@@ -2,14 +2,14 @@ use std::borrow::Cow;
 use std::io::{self, Write};
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use crossterm::style::Stylize;
 use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
 use rustyline::hint::Hinter;
 use rustyline::history::DefaultHistory;
-use rustyline::validate::Validator;
+use rustyline::validate::{Validator, MatchingBracketValidator};
 use rustyline::{Context as RustylineContext, Editor, Helper};
 
 use crate::session::PrimeSession;
@@ -75,8 +75,21 @@ pub fn display_init_info(
 }
 
 pub async fn run_repl(mut session: PrimeSession) -> Result<()> {
-    let mut editor = Editor::<PrimeHelper, DefaultHistory>::new()?;
+    let mut editor = Editor::<PrimeHelper, DefaultHistory>::new()
+        .context("Failed to initialize rustyline editor")?;
     editor.set_helper(Some(PrimeHelper {}));
+    
+    // Load history from file
+    let prime_config_dir = dirs::home_dir()
+        .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?
+        .join(".prime");
+    let history_file = prime_config_dir.join("history.txt");
+    
+    if history_file.exists() {
+        editor.load_history(&history_file).unwrap_or_else(|e| {
+            eprintln!("{}", format!("Warning: Failed to load history: {}", e).yellow());
+        });
+    }
 
     // **ANSI-free prompt** so Rustyline counts width correctly
     let prompt = "» ".to_string();
@@ -115,6 +128,18 @@ pub async fn run_repl(mut session: PrimeSession) -> Result<()> {
             }
         }
     }
+    
+    // Save history to file
+    if !prime_config_dir.exists() {
+        std::fs::create_dir_all(&prime_config_dir).unwrap_or_else(|e| {
+            eprintln!("{}", format!("Warning: Failed to create config directory: {}", e).yellow());
+        });
+    }
+    
+    editor.save_history(&history_file).unwrap_or_else(|e| {
+        eprintln!("{}", format!("Warning: Failed to save history: {}", e).yellow());
+    });
+    
     Ok(())
 }
 
@@ -126,7 +151,7 @@ fn handle_special_command(cmd_line: &str, session: &PrimeSession) -> Result<bool
     match command.as_str() {
         "clear" | "cls" => {
             print!("\x1B[2J\x1B[1;1H");
-            io::stdout().flush()?;
+            io::stdout().flush().context("Failed to flush stdout for clear command")?;
             Ok(true)
         }
         "help" => {
@@ -216,7 +241,10 @@ impl Hinter for PrimeHelper {
             return None;
         }
 
-        let commands = ["exit", "quit", "!help", "!clear", "!cls", "!log", "!memory"];
+        let commands = [
+            "exit", "quit", "!help", "!clear", "!cls", "!log",
+            "!memory", "!memory long", "!memory short"
+        ];
 
         for cmd in commands {
             if cmd.starts_with(line) && line.len() < cmd.len() {
@@ -238,13 +266,23 @@ impl Completer for PrimeHelper {
         _ctx: &RustylineContext,
     ) -> Result<(usize, Vec<Pair>), ReadlineError> {
         if line.starts_with('!') {
-            let commands = ["!help", "!clear", "!cls", "!log", "!memory", "!exit", "!quit"];
+            let commands = [
+                ("!help", "help"),
+                ("!clear", "clear"),
+                ("!cls", "cls"),
+                ("!log", "log"),
+                ("!memory", "memory"),
+                ("!memory long", "memory long"),
+                ("!memory short", "memory short"),
+                ("!exit", "exit"),
+                ("!quit", "quit"),
+            ];
             let mut candidates = Vec::new();
             let prefix = &line[..pos];
-            for cmd in commands {
+            for (cmd, display) in commands {
                 if cmd.starts_with(prefix) {
                     candidates.push(Pair {
-                        display: cmd.to_string(),
+                        display: format!("{} ({})", cmd, display).to_string(),
                         replacement: cmd[1..].to_string(),
                     });
                 }
@@ -255,4 +293,11 @@ impl Completer for PrimeHelper {
     }
 }
 
-impl Validator for PrimeHelper {}
+impl Validator for PrimeHelper {
+    fn validate(
+        &self,
+        _ctx: &mut rustyline::validate::ValidationContext,
+    ) -> Result<rustyline::validate::ValidationResult, ReadlineError> {
+        Ok(rustyline::validate::ValidationResult::Valid(None))
+    }
+}

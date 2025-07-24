@@ -162,9 +162,15 @@ fn read_file_to_string_with_limit(path: &Path, line_range: Option<(usize, usize)
 
     if let Some((start, end)) = line_range {
         if start == 0 || start > end {
-            return Err(anyhow!("Invalid line range: start must be >= 1 and start <= end."));
+            return Err(anyhow!("Invalid line range: start must be >= 1 and start <= end. Got start={} end={}", start, end));
         }
-        let all_lines: Vec<_> = reader.lines().map(|l| l.unwrap_or_default()).collect();
+        let all_lines: Vec<_> = reader.lines().enumerate().map(|(i, l)| {
+            l.with_context(|| format!("Failed to read line {} from file: {}", i + 1, path.display()))
+                .unwrap_or_else(|e| {
+                    eprintln!("Warning: {}", e);
+                    String::new()
+                })
+        }).collect();
         let total_lines = all_lines.len();
 
         if start > total_lines {
@@ -184,9 +190,9 @@ fn read_file_to_string_with_limit(path: &Path, line_range: Option<(usize, usize)
     } else {
         let metadata = fs::metadata(path)?;
         if metadata.len() > MAX_FILE_READ_BYTES {
-            let mut limited_reader = BufReader::new(fs::File::open(path)?).take(MAX_FILE_READ_BYTES);
+            let mut limited_reader = BufReader::new(fs::File::open(path).with_context(|| format!("Failed to open file for reading (size limit): {}", path.display()))?).take(MAX_FILE_READ_BYTES);
             let mut buffer = Vec::new();
-            limited_reader.read_to_end(&mut buffer)?;
+            limited_reader.read_to_end(&mut buffer).with_context(|| format!("Failed to read file content (size limit): {}", path.display()))?;
 
             truncated = true;
             if looks_binary(&buffer) {
@@ -198,7 +204,7 @@ fn read_file_to_string_with_limit(path: &Path, line_range: Option<(usize, usize)
             }
         } else {
             let mut tmp = String::new();
-            BufReader::new(fs::File::open(path)?).read_to_string(&mut tmp)?;
+            BufReader::new(fs::File::open(path).with_context(|| format!("Failed to open file for reading: {}", path.display()))?).read_to_string(&mut tmp).with_context(|| format!("Failed to read file content: {}", path.display()))?;
             content = tmp;
             truncated = false;
         }
