@@ -93,6 +93,16 @@ if (-not (Test-Path $releaseFolder)) {
     }
 }
 
+# Function to check if a target is installed
+function Test-TargetInstalled {
+    param (
+        [string]$target
+    )
+    $installedTargets = rustup target list | Where-Object { $_ -like "*installed*" }
+    return $installedTargets -like "*$target*"
+}
+
+
 # build for windows
 Write-Output "🔨 Building Windows binary..."
 if (Test-TargetInstalled "x86_64-pc-windows-msvc") {
@@ -108,14 +118,6 @@ if (Test-TargetInstalled "x86_64-pc-windows-msvc") {
     Write-Output "To install the target, run: rustup target add x86_64-pc-windows-msvc"
 }
 
-# Function to check if a target is installed
-function Test-TargetInstalled {
-    param (
-        [string]$target
-    )
-    $installedTargets = rustup target list | Where-Object { $_ -like "*installed*" }
-    return $installedTargets -like "*$target*"
-}
 
 # build for linux
 Write-Output "🔨 Building Linux binary..."
