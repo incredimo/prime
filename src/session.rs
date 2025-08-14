@@ -1,3 +1,4 @@
+ 
 use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
@@ -98,10 +99,19 @@ impl PrimeSession {
         self.save_log("User Input", input)?;
 
         let mut turn_count = 0;
-        const MAX_TURNS: usize = 3; // tighter loop
+        // Allow overriding from env; default to 20 recursive steps.
+        let max_turns: usize = std::env::var("LLM_MAX_TURNS")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(20);
+
+        // Basic loop-safety: detect identical action blocks repeating.
+        use std::collections::VecDeque;
+        const DUP_WINDOW: usize = 3;
+        let mut recent_action_signatures: VecDeque<String> = VecDeque::new();
 
         loop {
-            if turn_count >= MAX_TURNS {
+            if turn_count >= max_turns {
                 println!(
                     "{}",
                     "Reached maximum turns for this request. Please try a new prompt.".yellow()
@@ -129,10 +139,32 @@ impl PrimeSession {
                 io::stdout().flush()?;
             }
 
+            // ------- loop-safety: detect repeating action signatures -------
+            let sig = parsed
+                .tool_calls
+                .iter()
+                .map(|t| t.to_string())
+                .collect::<Vec<_>>()
+                .join("\n");
+            recent_action_signatures.push_back(sig.clone());
+            if recent_action_signatures.len() > DUP_WINDOW {
+                recent_action_signatures.pop_front();
+            }
+            if recent_action_signatures.len() == DUP_WINDOW
+                && recent_action_signatures.iter().all(|s| *s == sig)
+            {
+                println!("{}", "⚠ Detected repeated identical actions. Stopping to avoid an infinite loop.".yellow());
+                break;
+            }
+            // ----------------------------------------------------------------
+
             let action_results = self.execute_actions(parsed.tool_calls).await?;
 
             let results_prompt = self.format_tool_results_for_llm(&action_results)?;
             self.save_log("Tool Results", &results_prompt)?;
+
+            // Tiny pacing so the spinner messages feel crisp
+            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
         }
         Ok(())
     }
@@ -151,14 +183,27 @@ impl PrimeSession {
     }
 
     async fn generate_prime_response(&mut self) -> Result<String> {
-        let history = self.get_history(Some(10))?;
+        // Give the model enough context to chain steps; configurable window.
+        let history_window: usize = std::env::var("LLM_HISTORY_WINDOW")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(50);
+        let history = self.get_history(Some(history_window))?;
         let mut messages = vec![ChatMessage::user()
             .content(self.get_system_prompt()?)
             .build()];
         messages.extend(history);
 
+        // A small, consistent “continue or finish” instruction each turn.
+        messages.push(
+            ChatMessage::user()
+                .content("Given the latest <tool_output> blocks, either:\n- produce a ```primeactions block with the next minimal set of tool calls, or\n- if the task is fully complete, reply with brief confirmation and NO primeactions block.")
+                .build(),
+        );
+
         let spinner = ProgressBar::new_spinner();
-        spinner.set_style(ProgressStyle::with_template("{spinner:.blue.bold} {msg}").unwrap());
+        spinner
+            .set_style(ProgressStyle::with_template("{spinner:.blue.bold} {msg}").unwrap());
         spinner.set_message("Thinking...");
         spinner.enable_steady_tick(std::time::Duration::from_millis(80));
 
@@ -168,7 +213,7 @@ impl PrimeSession {
         })?;
 
         spinner.finish_and_clear();
-        
+
         // Add a small delay to show the completion message
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
@@ -183,152 +228,60 @@ impl PrimeSession {
         let operating_system = std::env::consts::OS;
         let working_dir = std::env::current_dir()?.display().to_string();
 
-        // Simplified behavioral prompt focusing on core principles
-        let behavioral_prompt = r#"
-You are PRIME, an AI terminal assistant designed to help users accomplish tasks efficiently.
+        // Parser-aligned prompt. Only the actions your parser understands.
+        let prompt = format!(
+r#"
+You are PRIME, a terminal-only assistant that can **plan → act → observe → repeat** until the task is complete.
 
-CORE PRINCIPLES:
-1. You operate through the terminal interface only
-2. You can execute commands, read/write files, and navigate directories
-3. You distinguish between questions (requiring explanations) and tasks (requiring execution)
-4. For questions, provide concise instructions without executing commands
-5. For tasks, execute the necessary actions with minimal user interaction
-6. For complex tasks, gather required information before proceeding
+TOOLS (exact syntax):
+````
 
-COMMAND EXECUTION:
-- Use non-interactive commands with non-paginated output
-- Maintain current working directory when possible
-- Use absolute paths for clarity
-- Handle errors gracefully and provide informative feedback
+```primeactions
+shell: <command with args>
+list_dir: <path>
+read_file: <path> [optional: lines=START-END]
+write_file: <path> [optional: append=true]
+<file content for write_file, terminated by the literal line>
+EOF_PRIME
+```
 
-FILE OPERATIONS:
-- Read files only when necessary for task completion
-- Specify line ranges when reading large files
-- Write files with appropriate content and permissions
+```
 
-MEMORY OPERATIONS:
-- Use write_memory to save important information for future reference
-- Specify memory type as either "long_term" or "short_term"
-- Save important context, decisions, and outcomes to long-term memory
-- Use short-term memory for temporary information relevant to current tasks
-- Use clear_memory to reset either long-term or short-term memory when needed
+MEMORY ACTIONS (same block, content terminated by EOF_PRIME):
+```
 
-RESPONSE FORMAT:
-- Provide natural language responses for context and explanations
-- Use annotated Markdown code blocks for actions
-- Follow the specific syntax for each action type
-
-TOOLS:
-- Only use the provided tools (shell, read_file, write_file, list_dir)
-- Never reference tool names directly in user communications
-- Always follow tool-specific rules and constraints
-
-MEMORY:
-- Utilize provided memory context to inform responses
-- Reference previous interactions when relevant to the current task
-- You have access to both long-term and short-term memory
-- Long-term memory persists across sessions and should contain important information
-- Short-term memory is cleared more frequently and contains recent interactions
-- When appropriate, save important information to long-term memory for future reference
-
-TASK COMPLETION:
-- Focus on exactly what the user requested
-- Verify task completion before responding
-- Offer next steps only when appropriate
-"#;
-
-        // The technical instructions that teach the LLM our specific syntax.
-        let technical_prompt = format!(
-            r#"
-You are an AI assistant that interacts with the user's system by generating annotated Markdown code blocks.
-
-**RESPONSE FORMAT**
-
-Your response should contain your thinking in plain text, followed by one or more annotated code blocks that represent your actions.
-
-**ACTION SYNTAX**
-
-The general syntax is a fenced code block with the language specified, followed by an attribute block defining the action and its arguments.
-
-```language {{.action [arg="value"]}}
+```primeactions
+write_memory: long_term
 <content>
+EOF_PRIME
 ```
 
-**AVAILABLE ACTIONS**
-
-1.  **Execute Code or a Command (`.execute`)**
-    - This is the most common action. It runs the content of the block.
-    - If the language is `shell`, the content is executed directly as a shell command.
-    - If the language is anything else (e.g., `python`, `javascript`), the content is saved to a temporary file and executed with the appropriate interpreter.
-    - You can provide a custom execution command via the `command` attribute. The placeholder `$content` will be replaced with the block's content, and `$file` will be replaced with the path to the temporary file.
-    - Examples:
-      ```shell {{.execute}}
-      ls -l --no-pager
-      ```
-      ```python {{.execute}}
-      import os
-      print(f"Current directory: {{os.getcwd()}}")
-      ```
-      ```python {{.execute command="python3 -c $content"}}
-      print("Executing with a custom command")
-      ```
-
-2.  **Save or Create a File (`.save`)**
-    - Use the language of the code being written (e.g., `python`, `rust`, `json`).
-    - The `file_path` argument is **required**.
-    - The content of the block is the full content of the file.
-    - Example:
-      ```python {{.save file_path="app.py"}}
-      def main():
-          print("Hello from app.py")
-      ```
-
-3.  **Edit a File (`.search` and `.replace`)**
-    - This is a **two-block operation**. You must first provide a `.search` block, immediately followed by a `.replace` block.
-    - Both blocks must have the same `file_path` argument.
-    - The content of the blocks are the exact code snippets for searching and replacing.
-    - Example: "I will find the old function...
-      ```python {{.search file_path="app.py"}}
-      def main():
-          print("old content")
-      ```
-      ...and replace it with the new version."
-      ```python {{.replace file_path="app.py"}}
-      def main():
-          print("new, updated content")
-      ```
-
-4.  **Read a File (`.read`)**
-    - Use a generic block (no language specified, i.e., ```).
-    - The `file_path` argument is **required**.
-    - The `lines` argument (e.g., `lines="50-100"`) is optional.
-    - The content of the block is **always empty**.
-    - Example:
-      ```{{.read file_path="app.py" lines="1-10"}}
-      ```
-
-**TOOL RESULTS**
-After you perform an action, I will provide the result back to you in a simple, Markdown-friendly block for you to analyze.
-```tool_result for="execute" status="SUCCESS"
-<output of the command>
+```primeactions
+clear_memory: short_term
 ```
 
-<CONTEXT>
+````
+
+RULES:
+1) **Recurse until done**. After receiving <tool_output> blocks, decide the next minimal set of actions. If finished, **do not** emit a primeactions block.
+2) Prefer deterministic, non-interactive shell invocations. Keep outputs concise (avoid pagers).
+3) Read only what you need; use `lines=…` for large files.
+4) For `write_file`, emit the full desired content and terminate with `EOF_PRIME`.
+5) Use memory tools via `write_memory` and `clear_memory` actions.
+6) Safety: avoid destructive commands unless the user clearly asked; if needed, proceed with minimal scope.
+
+OBSERVATIONS COME AS:
+<tool_output id="N" for="…" status="SUCCESS|FAILURE">
+<stdout/preview …>
+</tool_output>
+
 OS: {operating_system}
-Working Directory: {working_dir}
+PWD: {working_dir}
 {memory}
-</CONTEXT>
-
---- BEGIN USER BEHAVIORAL PROMPT ---
-{behavioral_prompt}
---- END USER BEHAVIORAL PROMPT ---
-
-Now, begin.
 "#
         );
 
-        // Note: Using `{{` and `}}` to escape the braces for the `format!` macro.
-        Ok(technical_prompt.replace("{{", "{").replace("}}", "}"))
+        Ok(prompt)
     }
 
     pub async fn execute_actions(
@@ -340,7 +293,7 @@ Now, begin.
             "\n{}",
             format!("Executing {} tool(s)...", total_tools).cyan().bold()
         );
-        
+
         let mut all_results = Vec::new();
         for (index, tool_call) in tool_calls.into_iter().enumerate() {
             println!(
@@ -350,7 +303,7 @@ Now, begin.
             let result = self.execute_tool(tool_call).await;
             all_results.push(result);
         }
-        
+
         // Print summary
         let success_count = all_results.iter().filter(|r| r.success).count();
         if success_count == total_tools {
@@ -364,20 +317,20 @@ Now, begin.
                 format!("⚠ {} of {} tool(s) executed successfully", success_count, total_tools).yellow()
             );
         }
-        
+
         Ok(all_results)
     }
 
     async fn execute_tool(&self, tool_call: ToolCall) -> ToolExecutionResult {
         let tool_call_str = tool_call.to_string();
         let start_time = std::time::Instant::now();
-        
+
         // Print initial execution message
         println!(
             "\n{}",
             format!("μ Executing: {}", tool_call_str).cyan().bold()
         );
-        
+
         // Create a progress bar for the tool execution
         let pb = ProgressBar::new_spinner();
         pb.set_style(ProgressStyle::with_template("{spinner:.green.bold} {msg}").unwrap());
@@ -473,22 +426,16 @@ Now, begin.
                 }
             }
         };
-        
+
         // Finish the progress bar
         pb.finish_and_clear();
-        
+
         // Print completion message with timing
         let duration = start_time.elapsed();
         if success {
-            println!(
-                "{}",
-                format!("  ✓ Completed in {:?}", duration).green()
-            );
+            println!("{}", format!("  ✓ Completed in {:?}", duration).green());
         } else {
-            println!(
-                "{}",
-                format!("  ✗ Failed after {:?}", duration).red()
-            );
+            println!("{}", format!("  ✗ Failed after {:?}", duration).red());
         }
 
         ToolExecutionResult {
@@ -563,12 +510,13 @@ Now, begin.
     pub fn read_memory(&self, memory_type: Option<&str>) -> Result<String> {
         self.memory_manager.read_memory(memory_type)
     }
-    
+
     pub fn write_memory(&self, memory_type: &str, content: &str) -> Result<()> {
         self.memory_manager.write_memory(memory_type, content)
     }
-    
+
     pub fn clear_memory(&self, memory_type: &str) -> Result<()> {
         self.memory_manager.clear_memory(memory_type)
     }
 }
+ 

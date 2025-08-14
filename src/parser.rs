@@ -8,12 +8,14 @@
 //! Grammar recap:
 //!
 //! ```text
-//! ## Plan & Execution
-//! …free text…
+//! Natural language (plan / status / rationale)...
 //!
 //! ```primeactions
 //! shell: ls -la
 //! read_file: Cargo.toml lines=1-20
+//! write_file: path/to/file append=true
+//! <content terminated by the line: EOF_PRIME>
+//! EOF_PRIME
 //! ```
 //! ```
 
@@ -73,6 +75,12 @@ fn parse_read_args(args_str: &str) -> Result<(String, Option<(usize, usize)>)> {
 
 pub fn parse_llm_response(input: &str) -> Result<ParsedResponse> {
     let mut resp = ParsedResponse::default();
+
+    // Explicit done hint: if present, treat as completion with natural text only.
+    if input.contains("<done/>") {
+        resp.natural_language = input.trim().to_string();
+        return Ok(resp);
+    }
 
     // 1️⃣ Extract fenced action block – (?s) makes . match newlines
     let fence_re = Regex::new(r"(?s)```[ \t]*primeactions[ \t]*\n(.*?)```")

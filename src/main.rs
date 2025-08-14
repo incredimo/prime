@@ -49,9 +49,9 @@ async fn init_session() -> Result<PrimeSession> {
     let provider = env::var("LLM_PROVIDER").unwrap_or_else(|_| "google".to_string());
     let model = env::var("LLM_MODEL").unwrap_or_else(|_| {
         match provider.as_str() {
-            "google" => "gemini-1.5-flash-latest".to_string(),
-            "ollama" => "llama3".to_string(),
-            _ => "llama3".to_string(),
+            "google" => "gemini-2.5-flash".to_string(),
+            "ollama" => "gemma3".to_string(),
+            _ => "gemma3".to_string(),
         }
     });
     let temperature = env::var("LLM_TEMPERATURE")
