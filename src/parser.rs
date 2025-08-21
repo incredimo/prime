@@ -30,6 +30,7 @@ pub enum ToolCall {
     ListDir { path: String },
     WriteMemory { memory_type: String, content: String },
     ClearMemory { memory_type: String },
+    RunScript { lang: String, args: Option<String>, code: String, timeout_secs: Option<u64> },
 }
 
 #[derive(Debug, Default)]
@@ -154,6 +155,35 @@ pub fn parse_llm_response(input: &str) -> Result<ParsedResponse> {
                     path,
                     content: content_lines.join("\n"),
                     append,
+                }
+            }
+            "run_script" => {
+                // e.g. run_script: lang=python args="--flag" timeout=30
+                let mut lang = String::new();
+                let mut args = None;
+                let mut timeout_secs = None;
+
+                for part in args_str.split_whitespace() {
+                    if let Some(v) = part.strip_prefix("lang=") {
+                        lang = v.to_string();
+                    } else if let Some(v) = part.strip_prefix("args=") {
+                        args = Some(v.trim_matches('"').to_string());
+                    } else if let Some(v) = part.strip_prefix("timeout=") {
+                        timeout_secs = v.parse().ok();
+                    }
+                }
+                let mut code_lines = Vec::new();
+                while let Some(cl) = lines_iter.next() {
+                    if cl.trim() == "EOF_PRIME" {
+                        break;
+                    }
+                    code_lines.push(cl);
+                }
+                ToolCall::RunScript {
+                    lang,
+                    args,
+                    code: code_lines.join("\n"),
+                    timeout_secs,
                 }
             }
             _ => continue, // ignore unknown tools

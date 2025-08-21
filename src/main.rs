@@ -6,12 +6,14 @@
 //! * Cargo version bump is reflected in the banner.
 //! * Pulled `serde_json` into crate graph implicitly via `session.rs`.
 
+mod actions;
 mod commands;
 mod config;
 mod console;
 mod memory;
 mod session;
 mod parser;
+mod ui; // ★ NEW: UI helpers
 
 use std::env;
 use std::path::PathBuf;
@@ -70,7 +72,7 @@ async fn init_session() -> Result<PrimeSession> {
     let workspace_dir = env::current_dir().context("Failed to get current working directory")?;
 
     // Build LLM provider based on the selected provider
-    let (llm, provider_name, api_key_name) = match provider.as_str() {
+    let (llm, provider_name, _api_key_name) = match provider.as_str() {
         "google" => {
             let api_key = env::var("GEMINI_API_KEY").context("GEMINI_API_KEY environment variable not set")?;
             let llm = LLMBuilder::new()

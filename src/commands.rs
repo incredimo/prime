@@ -1,11 +1,6 @@
-//! CommandProcessor – safe, cross‑platform shell/file primitives for Prime
-//! ------------------------------------------------------------------------
-//! The earlier implementation worked, but suffered from a few UX / safety potholes:
-//! * Previewed **entire** first 5 lines even for binary output → garbage in the terminal.
-//! * On Windows, the PowerShell `curl` alias printed an object instead of raw HTTP body.
-//! * Missing helpers for quickly detecting dangerous commands & binary payloads.
-//!
-//! This rewrite fixes those issues while staying API‑compatible with the rest of Prime.
+//! CommandProcessor – safe, cross-platform shell/file primitives for Prime
+//! Streamlined UI: this module does no verbose printing;
+//! it only prompts for dangerous commands when needed.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -17,15 +12,12 @@ use crossterm::style::Stylize;
 use glob::Pattern;
 
 use crate::config;
-
-// ---------------------------------------------------------------------
-// Constants & helpers
-// ---------------------------------------------------------------------
+use crate::ui;
 
 const MAX_FILE_READ_LINES: usize = 1000;
-const MAX_FILE_READ_BYTES: u64 = 1_048_576; // 1 MB
+const MAX_FILE_READ_BYTES: u64 = 1_048_576; // 1 MB
 const MAX_DIR_LISTING_CHILDREN_DISPLAY: usize = 20;
-const OUTPUT_PREVIEW_BYTES: usize = 1024;   // 1 KB preview for stdout/stderr
+const OUTPUT_PREVIEW_BYTES: usize = 1024;   // 1 KB preview for stdout/stderr
 
 #[inline]
 fn looks_binary(buf: &[u8]) -> bool {
@@ -36,18 +28,13 @@ fn human_preview(data: &[u8]) -> String {
     if looks_binary(data) {
         return "[binary data omitted]".to_string();
     }
-
     let text = String::from_utf8_lossy(data);
     let mut out: String = text.chars().take(OUTPUT_PREVIEW_BYTES).collect();
     if text.len() > OUTPUT_PREVIEW_BYTES {
-        out.push_str("\n... (output truncated)");
+        out.push_str("\n… (output truncated)");
     }
     out
 }
-
-// ---------------------------------------------------------------------
-// CommandProcessor definition
-// ---------------------------------------------------------------------
 
 pub struct CommandProcessor {
     shell_command: String,
@@ -60,7 +47,6 @@ impl CommandProcessor {
     pub fn new() -> Self {
         #[cfg(target_os = "windows")]
         let (shell_command, shell_args) = ("powershell".to_string(), vec!["-NoLogo".into(), "-Command".into()]);
-
         #[cfg(not(target_os = "windows"))]
         let (shell_command, shell_args) = ("sh".to_string(), vec!["-c".into()]);
 
@@ -85,13 +71,13 @@ impl CommandProcessor {
     // -------------------------------------------------- //
 
     pub fn execute_command(&self, command: &str, working_dir: Option<&Path>) -> Result<(i32, String)> {
-        let current_dir = working_dir.unwrap_or_else(|| Path::new("."));
-        println!("{}", format!("Executing in '{}': {}", current_dir.display(), command).cyan());
+        let _current_dir = working_dir.unwrap_or_else(|| Path::new("."));
 
+        // Ask before dangerous commands (concise prompt).
         for pattern in &self.ask_me_before_patterns {
             if command.contains(pattern) {
-                println!("{}", format!("DANGEROUS COMMAND DETECTED: '{}' matches safety pattern '{}'.", command, pattern).bold().red());
-                print!("Do you want to continue? (y/N): ");
+                println!("{}", ui::err_tag(&format!("Dangerous command detected (matches '{}')", pattern)));
+                print!("Proceed? [y/N]: ");
                 std::io::stdout().flush().context("Failed to flush stdout")?;
 
                 let mut line = String::new();
@@ -99,6 +85,7 @@ impl CommandProcessor {
                 if !line.trim().eq_ignore_ascii_case("y") {
                     return Ok((-1, "Command cancelled by user.".into()));
                 }
+                break;
             }
         }
 
@@ -108,7 +95,6 @@ impl CommandProcessor {
 
         let output = Command::new(&self.shell_command)
             .args(&args)
-            .current_dir(current_dir)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -116,7 +102,7 @@ impl CommandProcessor {
 
         let exit_code = output.status.code().unwrap_or(-1);
 
-        // We preview only a slice; store full merged output for return value.
+        // Return full merged output; caller decides how to render.
         let mut merged = Vec::new();
         merged.extend_from_slice(&output.stdout);
         if !output.stderr.is_empty() {
@@ -124,13 +110,68 @@ impl CommandProcessor {
             merged.extend_from_slice(&output.stderr);
         }
 
-        let preview_text = human_preview(&merged);
-        println!("{}", format!("Command completed with exit code: {}", exit_code).dark_grey());
-        if !preview_text.is_empty() {
-            println!("{}", format!("Output preview:\n{}", preview_text).dark_grey());
-        }
+        // Optional: quick preview to log internally later if desired.
+        let _preview_text = human_preview(&merged);
 
         Ok((exit_code, String::from_utf8_lossy(&merged).into()))
+    }
+
+    pub async fn execute_command_async(&self, command: &str, working_dir: Option<&Path>) -> Result<(i32, String)> {
+        use std::time::Duration;
+        
+        let _current_dir = working_dir.unwrap_or_else(|| Path::new("."));
+
+        // Ask before dangerous commands (concise prompt).
+        for pattern in &self.ask_me_before_patterns {
+            if command.contains(pattern) {
+                println!("{}", ui::err_tag(&format!("Dangerous command detected (matches '{}')", pattern)));
+                print!("Proceed? [y/N]: ");
+                std::io::stdout().flush().context("Failed to flush stdout")?;
+
+                let mut line = String::new();
+                std::io::stdin().read_line(&mut line).context("Failed to read user input")?;
+                if !line.trim().eq_ignore_ascii_case("y") {
+                    return Ok((-1, "Command cancelled by user.".into()));
+                }
+                break;
+            }
+        }
+
+        // Build argv for chosen shell
+        let mut args = self.shell_args.clone();
+        args.push(command.to_string());
+
+        let timeout_secs = std::env::var("LLM_SHELL_TIMEOUT_SECS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(60);
+
+        let duration = Duration::from_secs(timeout_secs);
+        
+        match tokio::time::timeout(duration, async {
+            tokio::process::Command::new(&self.shell_command)
+                .args(&args)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+                .await
+        }).await {
+            Err(_) => Ok((-1, format!("Command timed out after {:?}", duration))),
+            Ok(Ok(output)) => {
+                let exit_code = output.status.code().unwrap_or(-1);
+
+                // Return full merged output; caller decides how to render.
+                let mut merged = Vec::new();
+                merged.extend_from_slice(&output.stdout);
+                if !output.stderr.is_empty() {
+                    merged.extend_from_slice(b"\n\nSTDERR:\n");
+                    merged.extend_from_slice(&output.stderr);
+                }
+
+                Ok((exit_code, String::from_utf8_lossy(&merged).into()))
+            }
+            Ok(Err(e)) => Err(anyhow!("Failed to execute command: {}", e)),
+        }
     }
 
     // -------------------------------------------------- //
@@ -151,7 +192,7 @@ impl CommandProcessor {
 }
 
 // ---------------------------------------------------------------------
-// Stand‑alone utility functions – small & pure for easy unit testing
+// Stand-alone utility functions – small & pure for easy unit testing
 // ---------------------------------------------------------------------
 
 fn read_file_to_string_with_limit(path: &Path, line_range: Option<(usize, usize)>) -> Result<(String, bool)> {
@@ -212,7 +253,7 @@ fn read_file_to_string_with_limit(path: &Path, line_range: Option<(usize, usize)
 
     let mut final_content = content;
     if truncated {
-        final_content.push_str("\n... (file content truncated)");
+        final_content.push_str("\n… (file content truncated)");
     }
 
     Ok((final_content, truncated))
@@ -258,7 +299,7 @@ fn list_directory_smart(path: &Path, ignored_patterns: &[Pattern]) -> Result<Vec
         items.push(display_name);
     }
 
-    // Sort: directories first, then case‑insensitive alphabetical
+    // Sort: directories first, then case-insensitive alphabetical
     items.sort_by(|a, b| {
         let a_is_dir = a.ends_with('/');
         let b_is_dir = b.ends_with('/');
@@ -272,7 +313,7 @@ fn list_directory_smart(path: &Path, ignored_patterns: &[Pattern]) -> Result<Vec
     if items.len() > MAX_DIR_LISTING_CHILDREN_DISPLAY {
         let remaining = items.len() - MAX_DIR_LISTING_CHILDREN_DISPLAY;
         let mut truncated_items = items.into_iter().take(MAX_DIR_LISTING_CHILDREN_DISPLAY).collect::<Vec<_>>();
-        truncated_items.push(format!("... (and {} more items)", remaining));
+        truncated_items.push(format!("… (and {} more items)", remaining));
         Ok(truncated_items)
     } else {
         Ok(items)
