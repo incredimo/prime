@@ -34,10 +34,19 @@
     "**/Cargo.lock"
   ],
   "selected_files": [
-    ".\\memory.yaml",
-    ".\\prompt_template.md",
-    ".\\index.js",
-    ".\\handlers.yaml"
+    ".\\Cargo.toml",
+    ".\\src\\commands.rs",
+    ".\\src\\session.rs",
+    ".\\src",
+    ".\\src\\main.rs",
+    ".\\src\\ui.rs",
+    ".\\src\\parser.rs",
+    ".\\src\\styling.rs",
+    ".\\src\\config_utils.rs",
+    ".\\src\\config.rs",
+    ".\\src\\actions.rs",
+    ".\\src\\console.rs",
+    ".\\src\\memory.rs"
   ],
   "last_limit": null,
   "max_file_size": 1000000
