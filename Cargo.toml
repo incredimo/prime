@@ -1,6 +1,6 @@
 [package]
 name = "prime"
-version = "0.1.21"
+version = "0.1.22"
 edition = "2021"
 description = "A CLI tool for interacting with LLMs"
 license = "MIT OR Apache-2.0"
@@ -24,6 +24,7 @@ tempfile = "3.10"
 
 [[bin]]
 name = "prime"
+
 
 
 

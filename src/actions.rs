@@ -23,42 +23,28 @@ impl ActionRegistry {
     pub fn default() -> Self {
         let mut v = Vec::new();
 
-        // Always-available core tools (shell/file/memory)
+        // Always-available core verbs
         v.push(ActionDoc {
-            name: "core_prime_tools",
-            prompt_snippet: r#"```primeactions
-shell: <command>
-list_dir: <path>
-read_file: <path> [lines=START-END]
-write_file: <path> [append=true]
-<content>
-EOF_PRIME
-```"#.trim().to_string(),
-            when: |_| true,
-        });
+            name: "ucm_core",
+            prompt_snippet: r#"
+Use **Unified Command Markdown (UCM)** blocks:
 
-        // RunScript tool (only if we have at least one interpreter)
-        v.push(ActionDoc {
-            name: "run_script",
-            prompt_snippet: r#"Use when writing a short script is simpler than inline shell:
-```primeactions
-run_script: lang=<python|node|bash|pwsh|ruby|php> [args="..."] [timeout=30]
-<code>
-EOF_PRIME
-```"#.trim().to_string(),
-            when: |ctx| !ctx.has_interpreters.is_empty(),
-        });
+```get {#f1}
+file:Cargo.toml
+dir:src/
+glob:src/**/*.rs
+mem:long
+````
 
-        // Memory tools (always available, but document briefly)
-        v.push(ActionDoc {
-            name: "memory_tools",
-            prompt_snippet: r#"Memory:
-```primeactions
-write_memory: long_term
-<content>
-EOF_PRIME
-clear_memory: short_term
-```"#.trim().to_string(),
+```set { target="file:README.md" }
+New note
+```
+
+```run { sh=true }
+git status -sb
+```
+
+"#.trim().to_string(),
             when: |_| true,
         });
 

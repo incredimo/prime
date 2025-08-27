@@ -1,195 +1,446 @@
-//! parser.rs – extract Plan & Execution and Action Block from LLM messages.
-//! ----------------------------------------------------------------------------
-//! v0.1.9 fixes:
-//! * Corrected regex – we accidentally looked for the **literal** "\\s". Now we
-//!   match real whitespace so fenced ````primeactions` blocks are detected again.
-//! * Still supports `<end_of_tool_output/>` sentinel, unchanged public API.
-//!
-//! Grammar recap:
-//!
-//! ```text
-//! Natural language (plan / status / rationale)...
-//!
-//! ```primeactions
-//! shell: ls -la
-//! read_file: Cargo.toml lines=1-20
-//! write_file: path/to/file append=true
-//! <content terminated by the line: EOF_PRIME>
-//! EOF_PRIME
+//! parser.rs — Unified Command Markdown (UCM) parser
+//! -------------------------------------------------
+//! Parses fenced code blocks that use Pandoc-like attributes.
+//! Supported blocks: ```get …```, ```set …```, ```run …```
+//
+//! Examples:
+//! ```get {#f1 lines=10-40}
+//! file:Cargo.toml
+//! glob:src/**/*.rs
+//! mem:long
 //! ```
+//
+//! ```set { target="file:NOTES.md" append=true }
+//! New line
+//! ```
+//
+//! ```run { lang=python timeout=30 }
+//! print("hi")
+//! ```
+//
+//! ```run { mode=http method=GET url="https://api.github.com" }
+//! Accept: application/json
 //! ```
 
 use anyhow::{anyhow, Context, Result};
-use regex::Regex;
+use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ToolCall {
-    Shell { command: String },
-    ReadFile { path: String, lines: Option<(usize, usize)> },
-    WriteFile { path: String, content: String, append: bool },
-    ListDir { path: String },
-    WriteMemory { memory_type: String, content: String },
-    ClearMemory { memory_type: String },
-    RunScript { lang: String, args: Option<String>, code: String, timeout_secs: Option<u64> },
+    Get(GetSpec),
+    Set(SetSpec),
+    Run(RunSpec),
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ParsedResponse {
     pub natural_language: String,
     pub tool_calls: Vec<ToolCall>,
 }
 
-/// Helper to parse write_file arguments like "path/to/file append=true"
-fn parse_write_args(args_str: &str) -> (String, bool) {
-    let mut append = false;
-    let mut path = args_str.to_string();
-
-    if let Some(pos) = path.rfind(" append=true") {
-        if pos + " append=true".len() == path.len() {
-            append = true;
-            path.truncate(pos);
-        }
-    }
-    (path.trim().to_string(), append)
+#[derive(Debug, Clone, PartialEq)]
+pub struct Attrs {
+    pub id: Option<String>,
+    pub classes: BTreeSet<String>,
+    pub kv: BTreeMap<String, String>,
 }
 
-/// Helper to parse read_file arguments like "path/to/file lines=10-20"
-fn parse_read_args(args_str: &str) -> Result<(String, Option<(usize, usize)>)> {
-    if let Some(pos) = args_str.rfind(" lines=") {
-        let path = args_str[..pos].trim().to_string();
-        let range_str = args_str[pos + " lines=".len()..].trim();
-        let parts: Vec<&str> = range_str.split('-').collect();
-        if parts.len() == 2 {
-            let start = parts[0]
-                .parse::<usize>()
-                .context(format!("Invalid start line number: {}", parts[0]))?;
-            let end = parts[1]
-                .parse::<usize>()
-                .context(format!("Invalid end line number: {}", parts[1]))?;
-            return Ok((path, Some((start, end))));
-        } else {
-            return Err(anyhow!("Invalid lines format. Expected start-end"));
-        }
-    }
-    Ok((args_str.trim().to_string(), None))
+#[derive(Debug, Clone, PartialEq)]
+pub struct GetSpec {
+    pub id: Option<String>,
+    pub cwd: Option<String>,
+    pub limit_bytes: Option<usize>,
+    pub lines: Option<(usize, usize)>,
+    /// Targets: file:, dir:, glob:, http(s):, mem:*, input:, confirm:
+    pub targets: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetSpec {
+    pub id: Option<String>,
+    pub cwd: Option<String>,
+    pub target: String,     // e.g. file:PATH | mem:long | mkdir:PATH | rm:PATH
+    pub append: bool,
+    pub confirm: bool,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RunSpec {
+    pub id: Option<String>,
+    pub cwd: Option<String>,
+    pub timeout_secs: Option<u64>,
+    // Mode A: script
+    pub lang: Option<String>, // python|node|bash|pwsh|ruby|php
+    pub args: Option<String>,
+    pub code: Option<String>,
+    pub sh_one_liner: bool,   // treat body as shell command
+    // Mode B: HTTP
+    pub http: Option<HttpSpec>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HttpSpec {
+    pub method: String,
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    pub body: Option<String>,
 }
 
 pub fn parse_llm_response(input: &str) -> Result<ParsedResponse> {
-    let mut resp = ParsedResponse::default();
+    let mut blocks = extract_fences(input)?;
+    let mut calls = Vec::new();
 
-    // Explicit done hint: if present, treat as completion with natural text only.
-    if input.contains("<done/>") {
-        resp.natural_language = input.trim().to_string();
-        return Ok(resp);
+    let natural = trim_outside_text(input, &blocks);
+
+    for b in blocks.drain(..) {
+        match b.kind.as_str() {
+            "get" => {
+                let attrs = b.attrs;
+                let mut targets = Vec::new();
+                for line in b.body.lines() {
+                    let t = line.trim();
+                    if t.is_empty() || t.starts_with('#') { continue; }
+                    targets.push(t.to_string());
+                }
+                let get = GetSpec {
+                    id: attrs.id,
+                    cwd: attrs.kv.get("cwd").cloned(),
+                    limit_bytes: attrs.kv.get("limit_bytes").and_then(|v| v.parse().ok()),
+                    lines: parse_lines_opt(attrs.kv.get("lines"))?,
+                    targets,
+                };
+                calls.push(ToolCall::Get(get));
+            }
+            "set" => {
+                let attrs = b.attrs;
+                let target = attrs.kv.get("target")
+                    .cloned()
+                    .or_else(|| first_nonempty_line(&b.body))
+                    .ok_or_else(|| anyhow!("set: missing 'target'"))?;
+                let append = attrs.kv.get("append").map(|v| v == "true").unwrap_or(false);
+                let confirm = attrs.kv.get("confirm").map(|v| v == "true").unwrap_or(false);
+                let set = SetSpec {
+                    id: attrs.id,
+                    cwd: attrs.kv.get("cwd").cloned(),
+                    target,
+                    append,
+                    confirm,
+                    body: b.body,
+                };
+                calls.push(ToolCall::Set(set));
+            }
+            "run" => {
+                let attrs = b.attrs;
+                let timeout_secs = attrs.kv.get("timeout")
+                    .or_else(|| attrs.kv.get("timeout_secs"))
+                    .and_then(|v| v.parse::<u64>().ok());
+                // HTTP mode?
+                let http_mode = attrs.kv.get("mode").map(|s| s == "http").unwrap_or(false);
+                if http_mode {
+                    let method = attrs.kv.get("method").cloned().unwrap_or_else(|| "GET".into());
+                    let url = attrs.kv.get("url")
+                        .cloned()
+                        .ok_or_else(|| anyhow!("run{{mode=http}}: missing url"))?;
+                    let (headers, body) = split_headers_body(&b.body);
+                    let http = HttpSpec { method, url, headers, body };
+                    calls.push(ToolCall::Run(RunSpec {
+                        id: attrs.id,
+                        cwd: attrs.kv.get("cwd").cloned(),
+                        timeout_secs,
+                        lang: None,
+                        args: None,
+                        code: None,
+                        sh_one_liner: false,
+                        http: Some(http),
+                    }));
+                } else {
+                    // Script or shell
+                    let sh_one = attrs.kv.get("sh").map(|v| v == "true").unwrap_or(false);
+                    let lang = attrs.kv.get("lang").cloned();
+                    let args = attrs.kv.get("args").cloned().map(|s| strip_quotes(&s));
+                    let code = if sh_one { None } else { Some(b.body) };
+                    let run = RunSpec {
+                        id: attrs.id,
+                        cwd: attrs.kv.get("cwd").cloned(),
+                        timeout_secs,
+                        lang,
+                        args,
+                        code,
+                        sh_one_liner: sh_one,
+                        http: None,
+                    };
+                    calls.push(ToolCall::Run(run));
+                }
+            }
+            _ => { /* ignore unknown blocks */ }
+        }
     }
 
-    // 1️⃣ Extract fenced action block – (?s) makes . match newlines
-    let fence_re = Regex::new(r"(?s)```[ \t]*primeactions[ \t]*\n(.*?)```")
-        .map_err(|e| anyhow::anyhow!("Failed to compile regex for parsing primeactions block: {}", e))?;
-    let Some(caps) = fence_re.captures(input) else {
-        // No action block – treat whole message as natural text
-        resp.natural_language = input.trim().to_string();
-        return Ok(resp);
-    };
+    Ok(ParsedResponse {
+        natural_language: natural,
+        tool_calls: calls,
+    })
+}
 
-    let actions_block = caps.get(1).unwrap().as_str();
+/* ---------------- internals ---------------- */
 
-    // text before first fence = natural language
-    let start_idx = caps.get(0).unwrap().start();
-    resp.natural_language = input[..start_idx].trim().to_string();
+#[derive(Debug, Clone)]
+struct Fence {
+    kind: String, // get|set|run
+    attrs: Attrs,
+    body: String,
+    start: usize,
+    end: usize,
+}
 
-    // 2️⃣ Parse lines inside the fence
-    let mut lines_iter = actions_block.lines().peekable();
+fn trim_outside_text(all: &str, blocks: &[Fence]) -> String {
+    if let Some(first) = blocks.first() {
+        let head = all[..first.start].trim();
+        return head.to_string();
+    }
+    all.trim().to_string()
+}
 
-    while let Some(line) = lines_iter.next() {
+fn parse_lines_opt(v: Option<&String>) -> Result<Option<(usize, usize)>> {
+    if let Some(s) = v {
+        let parts: Vec<_> = s.split('-').collect();
+        if parts.len() != 2 { return Err(anyhow!("lines must be START-END")); }
+        let a = parts[0].parse::<usize>()?;
+        let b = parts[1].parse::<usize>()?;
+        if a == 0 || a > b { return Err(anyhow!("invalid lines range")); }
+        return Ok(Some((a, b)));
+    }
+    Ok(None)
+}
+
+fn first_nonempty_line(s: &str) -> Option<String> {
+    for l in s.lines() {
+        let t = l.trim();
+        if !t.is_empty() { return Some(t.to_string()); }
+    }
+    None
+}
+
+fn strip_quotes(s: &str) -> String {
+    let t = s.trim();
+    if (t.starts_with('"') && t.ends_with('"')) || (t.starts_with('\'') && t.ends_with('\'')) {
+        return t[1..t.len()-1].to_string();
+    }
+    t.to_string()
+}
+
+fn split_headers_body(body: &str) -> (Vec<(String, String)>, Option<String>) {
+    let mut headers = Vec::new();
+    let mut lines = body.lines().peekable();
+
+    while let Some(line) = lines.peek() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
-            continue;
+            lines.next(); // consume the blank line
+            break;
         }
-        let (tool_name, args_str) = match trimmed.split_once(':') {
-            Some((t, a)) => (t.trim(), a.trim()),
-            None => continue, // skip malformed lines
-        };
-
-        let tool_call = match tool_name {
-            "shell" => ToolCall::Shell {
-                command: args_str.into(),
-            },
-            "list_dir" => ToolCall::ListDir {
-                path: args_str.into(),
-            },
-            "read_file" => {
-                let (path, lines) = parse_read_args(args_str)?;
-                ToolCall::ReadFile { path, lines }
-            }
-            "write_memory" => {
-                let mut parts = args_str.splitn(2, ' ');
-                let memory_type = parts.next().unwrap_or("").to_string();
-                let mut content_lines = Vec::new();
-                while let Some(cl) = lines_iter.next() {
-                    if cl.trim() == "EOF_PRIME" {
-                        break;
-                    }
-                    content_lines.push(cl);
-                }
-                ToolCall::WriteMemory {
-                    memory_type,
-                    content: content_lines.join("\n"),
-                }
-            }
-            "clear_memory" => {
-                ToolCall::ClearMemory {
-                    memory_type: args_str.to_string(),
-                }
-            }
-            "write_file" => {
-                let (path, append) = parse_write_args(args_str);
-                let mut content_lines = Vec::new();
-                while let Some(cl) = lines_iter.next() {
-                    if cl.trim() == "EOF_PRIME" {
-                        break;
-                    }
-                    content_lines.push(cl);
-                }
-                ToolCall::WriteFile {
-                    path,
-                    content: content_lines.join("\n"),
-                    append,
-                }
-            }
-            "run_script" => {
-                // e.g. run_script: lang=python args="--flag" timeout=30
-                let mut lang = String::new();
-                let mut args = None;
-                let mut timeout_secs = None;
-
-                for part in args_str.split_whitespace() {
-                    if let Some(v) = part.strip_prefix("lang=") {
-                        lang = v.to_string();
-                    } else if let Some(v) = part.strip_prefix("args=") {
-                        args = Some(v.trim_matches('"').to_string());
-                    } else if let Some(v) = part.strip_prefix("timeout=") {
-                        timeout_secs = v.parse().ok();
-                    }
-                }
-                let mut code_lines = Vec::new();
-                while let Some(cl) = lines_iter.next() {
-                    if cl.trim() == "EOF_PRIME" {
-                        break;
-                    }
-                    code_lines.push(cl);
-                }
-                ToolCall::RunScript {
-                    lang,
-                    args,
-                    code: code_lines.join("\n"),
-                    timeout_secs,
-                }
-            }
-            _ => continue, // ignore unknown tools
-        };
-        resp.tool_calls.push(tool_call);
+        if let Some((k, v)) = trimmed.split_once(':') {
+            headers.push((k.trim().to_string(), v.trim().to_string()));
+        }
+        lines.next();
     }
 
-    Ok(resp)
+    let remaining: Vec<_> = lines.collect();
+    let body_opt = if remaining.is_empty() {
+        None
+    } else {
+        Some(remaining.join("\n"))
+    };
+
+    (headers, body_opt)
+}
+
+fn extract_fences(input: &str) -> Result<Vec<Fence>> {
+    let mut out = Vec::new();
+    let bytes = input.as_bytes();
+    let mut i = 0usize;
+
+    while i + 3 <= bytes.len() {
+        // find a fence start ```
+        if bytes[i] == b'`' {
+            let tick_start = i;
+            let mut ticks = 0;
+            while i < bytes.len() && bytes[i] == b'`' { ticks += 1; i += 1; }
+            if ticks < 3 { continue; }
+
+            // read to end of line to get lang/attrs
+            let line_end = input[i..].find('\n').map(|o| i + o).unwrap_or(bytes.len());
+            let header = input[i..line_end].trim();
+
+            // header can be: "get {#id key=val}" OR "{.get #id key=val}" OR "run { … }"
+            let (kind, attr_str) = parse_header(header)?;
+            if !(kind == "get" || kind == "set" || kind == "run") {
+                i = line_end + 1;
+                continue;
+            }
+
+            // body until matching fence of same length
+            let mut j = line_end + 1;
+            let fence_pat = "`".repeat(ticks);
+            let mut end = None;
+            while j < bytes.len() {
+                if input[j..].starts_with(&fence_pat) {
+                    // make sure fence is alone on the line (or just followed by spaces)
+                    let after = j + ticks;
+                    let line_tail = input[after..].split_once('\n').map(|(h, _)| h).unwrap_or("");
+                    if line_tail.trim().is_empty() {
+                        end = Some(j);
+                        break;
+                    }
+                }
+                // advance to next newline
+                if let Some(nl) = input[j..].find('\n') {
+                    j += nl + 1;
+                } else {
+                    break;
+                }
+            }
+            let Some(body_end) = end else { return Err(anyhow!("Unclosed fence for {}", kind)); };
+
+            let body = &input[line_end + 1 .. body_end];
+            let attrs = parse_attrs(attr_str)?;
+            out.push(Fence {
+                kind,
+                attrs,
+                body: body.to_string(),
+                start: tick_start,
+                end: body_end + ticks, // end of closing backticks
+            });
+
+            // move i to after the closing fence line
+            if let Some(nl) = input[body_end + ticks ..].find('\n') {
+                i = body_end + ticks + nl + 1;
+            } else {
+                i = bytes.len();
+            }
+        } else {
+            i += 1;
+        }
+    }
+    Ok(out)
+}
+
+/// Parses header like:
+///   "get {#id .x key=val key2=\"v\"}"
+///   "{.get #abc lines=1-4}"
+fn parse_header(header: &str) -> Result<(String, String)> {
+    let h = header.trim();
+    if h.starts_with('{') {
+        // pure attrs; must include .get|.set|.run
+        let attrs = h;
+        let classes = sniff_classes(attrs);
+        let k = classes
+            .into_iter()
+            .find(|c| c == "get" || c == "set" || c == "run")
+            .ok_or_else(|| anyhow!("attrs fence missing class .get/.set/.run"))?;
+        Ok((k, attrs.to_string()))
+    } else {
+        // language + optional attrs
+        let (lang, rest) = if let Some(sp) = h.find('{') {
+            (h[..sp].trim(), h[sp..].trim())
+        } else {
+            (h, "")
+        };
+        let k = lang.to_lowercase();
+        Ok((k, rest.to_string()))
+    }
+}
+
+fn sniff_classes(attrs: &str) -> Vec<String> {
+    let inside = attrs.trim().trim_start_matches('{').trim_end_matches('}');
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    let b = inside.as_bytes();
+    while i < b.len() {
+        while i < b.len() && b[i].is_ascii_whitespace() { i += 1; }
+        if i >= b.len() { break; }
+        if b[i] == b'.' {
+            i += 1;
+            let start = i;
+            while i < b.len() && !b[i].is_ascii_whitespace() && b[i] != b'.' && b[i] != b'#' && b[i] != b'}' {
+                i += 1;
+            }
+            out.push(inside[start..i].to_string());
+        } else {
+            // skip token
+            while i < b.len() && !b[i].is_ascii_whitespace() { i += 1; }
+        }
+    }
+    out
+}
+
+fn parse_attrs(attrs: String) -> Result<Attrs> {
+    let mut id = None;
+    let mut classes = BTreeSet::new();
+    let mut kv = BTreeMap::new();
+
+    let s = attrs.trim();
+    if s.is_empty() { return Ok(Attrs { id, classes, kv }); }
+    let inner = s.trim_start_matches('{').trim_end_matches('}').trim();
+
+    // simple tokenizer: tokens separated by whitespace, but key="value with spaces" kept together
+    let mut i = 0usize;
+    let bytes = inner.as_bytes();
+    while i < bytes.len() {
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() { i += 1; }
+        if i >= bytes.len() { break; }
+
+        match bytes[i] as char {
+            '.' => {
+                i += 1;
+                let start = i;
+                while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'.' && bytes[i] != b'#' {
+                    i += 1;
+                }
+                classes.insert(inner[start..i].to_string());
+            }
+            '#' => {
+                i += 1;
+                let start = i;
+                while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'.' && bytes[i] != b'#' {
+                    i += 1;
+                }
+                id = Some(inner[start..i].to_string());
+            }
+            _ => {
+                // key=val or lone word
+                let start = i;
+                while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'=' {
+                    i += 1;
+                }
+                let key = inner[start..i].to_string();
+                while i < bytes.len() && bytes[i].is_ascii_whitespace() { i += 1; }
+                if i < bytes.len() && bytes[i] == b'=' {
+                    i += 1;
+                    while i < bytes.len() && bytes[i].is_ascii_whitespace() { i += 1; }
+                    // value can be quoted
+                    let val = if i < bytes.len() && (bytes[i] == b'"' || bytes[i] == b'\'') {
+                        let q = bytes[i];
+                        i += 1;
+                        let start = i;
+                        while i < bytes.len() && bytes[i] != q { i += 1; }
+                        let v = inner[start..i].to_string();
+                        i += 1; // skip closing quote
+                        v
+                    } else {
+                        let start = i;
+                        while i < bytes.len() && !bytes[i].is_ascii_whitespace() { i += 1; }
+                        inner[start..i].to_string()
+                    };
+                    kv.insert(key, val);
+                } else {
+                    // bare token -> treat as boolean true
+                    kv.insert(key, "true".into());
+                }
+            }
+        }
+    }
+
+    Ok(Attrs { id, classes, kv })
 }

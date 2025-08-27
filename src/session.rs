@@ -11,7 +11,7 @@ use llm::chat::{ChatMessage, ChatMessageBuilder, ChatProvider, ChatRole};
 
 use crate::commands::CommandProcessor;
 use crate::memory::MemoryManager;
-use crate::parser::{self, ToolCall};
+use crate::parser::{self, ToolCall, GetSpec, SetSpec, RunSpec};
 use crate::ui;
 
 #[derive(Debug)]
@@ -24,40 +24,29 @@ pub struct ToolExecutionResult {
 impl fmt::Display for ToolCall {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ToolCall::Shell { command } => write!(f, "shell: {}", command),
-            ToolCall::ReadFile { path, lines } => {
-                if let Some((s, e)) = lines {
-                    write!(f, "read_file: {} lines={}-{}", path, s, e)
+            ToolCall::Get(g) => {
+                write!(f, "get{} {}",
+                    g.id.as_ref().map(|s| format!(" #{}", s)).unwrap_or_default(),
+                    g.targets.join(", ")
+                )
+            }
+            ToolCall::Set(s) => {
+                let body_snip = if s.body.len() > 30 {
+                    format!("{}...", s.body.replace('\n', " ")[..30].to_string())
+                } else { s.body.replace('\n', " ") };
+                write!(f, "set{} target=\"{}\" append={} confirm={} (content: \"{}\")",
+                    s.id.as_deref().unwrap_or(""),
+                    s.target, s.append, s.confirm, body_snip
+                )
+            }
+            ToolCall::Run(r) => {
+                if let Some(h) = &r.http {
+                    write!(f, "run http {} {}", h.method, h.url)
+                } else if r.sh_one_liner {
+                    write!(f, "run sh timeout={:?}", r.timeout_secs)
                 } else {
-                    write!(f, "read_file: {}", path)
+                    write!(f, "run lang={} timeout={:?}", r.lang.as_deref().unwrap_or("-"), r.timeout_secs)
                 }
-            }
-            ToolCall::WriteFile { path, content, append } => {
-                let content_snip = if content.len() > 30 {
-                    format!("{}...", &content[..30].replace('\n', " "))
-                } else {
-                    content.replace('\n', " ")
-                };
-                write!(f, "write_file: {} append={} (content: \"{}\")", path, append, content_snip)
-            }
-            ToolCall::ListDir { path } => write!(f, "list_dir: {}", path),
-            ToolCall::WriteMemory { memory_type, content } => {
-                let content_snip = if content.len() > 30 {
-                    format!("{}...", &content[..30].replace('\n', " "))
-                } else {
-                    content.replace('\n', " ")
-                };
-                write!(f, "write_memory: {} (content: \"{}\")", memory_type, content_snip)
-            }
-            ToolCall::ClearMemory { memory_type } => write!(f, "clear_memory: {}", memory_type),
-            ToolCall::RunScript { lang, args, code, timeout_secs } => {
-                let code_snip = if code.len() > 30 {
-                    format!("{}...", &code[..30].replace('\n', " "))
-                } else {
-                    code.replace('\n', " ")
-                };
-                write!(f, "run_script: lang={} timeout={:?} args={:?} (code: \"{}\")", 
-                       lang, timeout_secs, args, code_snip)
             }
         }
     }
@@ -183,20 +172,16 @@ impl PrimeSession {
             ChatMessage::user()
                 .content(r#"Given the latest <tool_output> blocks, either:
 
-1. **Continue with tools**: Produce a ```primeactions block with the next minimal set of tool calls needed to progress toward task completion, or
+1. **Continue with tools**: Produce fenced code blocks with the next minimal set of tool calls needed to progress toward task completion, or
 
-2. **Task complete**: If the task is fully complete, reply with brief confirmation and NO primeactions block.
+2. **Task complete**: If the task is fully complete, reply with brief confirmation and NO code blocks.
 
-## Action Block Format
-```
-primeactions
-tool_name: parameter1="value1" parameter2="value2"
-tool_name: parameter1="value3"
-```
+## Use UCM Protocol
+Use `get`, `set`, `run` blocks as shown in the system prompt. Do NOT use the old `primeactions` format.
 
 ## Decision Criteria
 - Use minimal tool calls needed for next step
-- Prefer `run_script` when it reduces total steps
+- Prefer `run` when it reduces total steps
 - Read files before modifying them
 - Verify command success before proceeding
 - Stop when task objectives are met"#)
@@ -240,74 +225,65 @@ tool_name: parameter1="value3"
         let snippets = reg.select_for(&ctx).into_iter()
             .map(|a| a.prompt_snippet.as_str()).collect::<Vec<_>>().join("\n\n");
 
-        let prompt = format!(r#"
-# PRIME - Terminal-Only Assistant
+        let prompt = format!(
+            r#"
+# PRIME - Terminal-Only Assistant (UCM Protocol)
 
-You are PRIME, a **terminal-only coding assistant** that **plans → acts → observes → repeats**.
+Emit **fenced code blocks** using the three verbs below. Do NOT use the old `primeactions`.
 
-## CORE WORKFLOW
-1. **Plan**: Analyze the task and determine minimal tool calls needed
-2. **Act**: Execute tools with precise, deterministic commands
-3. **Observe**: Review results and plan next steps
-4. **Repeat**: Continue until task completion
+## VERBS
 
-## TOOL USAGE RULES
+### 1) get
+```get {{#opt_id cwd="{working_dir}"}}
+file:Cargo.toml
+dir:src/
+glob:src/**/*.rs
+http:https://example.com
+mem:long
+input:Your name?
+confirm:Proceed?
+````
 
-### 1) Execution Strategy
-- **Recurse until done**: Continue tool calls until task is complete
-- **Emit no action block when complete**: Reply with natural language confirmation only
-- **Minimal viable steps**: Use fewest tool calls possible
-- **Deterministic commands**: All commands must be non-interactive and exit cleanly
+### 2) set
 
-### 2) File Operations
-- **Read minimally**: Use `lines=(start,end)` for targeted reads
-- **Write completely**: Include full file content, end with `EOF_PRIME` marker
-- **Append carefully**: Only use `append=true` when explicitly adding to existing content
-- **Verify paths**: Ensure file paths are relative to current working directory
+```set {{ target="file:README.md" }}
+Hello
+```
 
-### 3) Script Execution
-- **Prefer run_script**: Use when it reduces total steps/tokens vs shell commands
-- **Supported languages**: python, node, bash, powershell, ruby, php
-- **Timeout safety**: Default 60s timeout, specify longer if needed
-- **Clean execution**: Scripts should not require user interaction
+```set {{ target="mem:short" }}
+Next step: parse config
+```
 
-### 4) Shell Commands
-- **Non-interactive**: Commands must not prompt for input
-- **Exit codes**: Success = 0, handle failures gracefully
-- **Output capture**: Both stdout and stderr are captured
-- **Working directory**: Commands run in current PWD
+### 3) run
 
-### 5) Memory Management
-- **Context persistence**: Use memory for cross-session context
-- **Type-specific**: Use appropriate memory types for different data
-- **Clean up**: Clear memory when no longer needed
+```run {{ sh=true }}
+git status -sb
+```
 
-### 6) Safety & Scoping
-- **Smallest possible scope**: Limit operations to necessary files/directories
-- **No destructive actions**: Avoid rm -rf, overwrite protection
-- **Verify before execute**: Read files before modifying
-- **Error handling**: Graceful failure handling with informative messages
+```run {{ lang=python timeout=30 }}
+print("ok")
+```
 
-## RESPONSE FORMAT
-- Use ```primeactions blocks for tool calls
-- One tool call per block
-- Natural language only when task is complete
-- Clear, concise explanations
+```run {{ mode=http method=GET url="https://api.github.com/user" }}
+Accept: application/json
+```
 
-## ENVIRONMENT CONTEXT
-- **OS**: {operating_system}
-- **PWD**: {working_dir}
-- **Available Interpreters**: {interpreters}
+## Rules
 
-## PERSISTENT MEMORY
+* Use the **fewest** blocks required; continue planning → acting until done.
+* Read before write. Confirm destructive ops with `set {{target="rm:…", confirm=true}}`.
+* If done, reply in natural language **without** any code block.
+
+OS: {operating_system}
+PWD: {working_dir}
+Interpreters: {interpreters}
+
 {memory}
-
-## AVAILABLE TOOLS (this turn only)
-{snippets}
-
-
 "#,
-        interpreters = has.iter().cloned().collect::<Vec<_>>().join(", ")
+            operating_system = operating_system,
+            working_dir = working_dir,
+            interpreters = has.iter().cloned().collect::<Vec<_>>().join(", "),
+            memory = memory
         );
         Ok(prompt)
     }
@@ -367,112 +343,228 @@ You are PRIME, a **terminal-only coding assistant** that **plans → acts → ob
 
     async fn run_tool(&self, tool_call: ToolCall) -> (bool, String) {
         match tool_call {
-            ToolCall::Shell { command } => {
-                match self.command_processor.execute_command_async(&command, None).await {
-                    Ok((0, out)) => (true, out),
-                    Ok((code, out)) => {
-                        if code == -1 {
-                            (false, out)
-                        } else {
-                            (false, format!("Command failed with exit code {}\nOutput:\n{}", code, out))
+            ToolCall::Get(g) => {
+                use std::path::Path;
+                use crate::commands::CommandProcessor;
+                let cp = &self.command_processor;
+                let mut parts = Vec::new();
+
+                for tgt in g.targets {
+                    if let Some(rest) = tgt.strip_prefix("file:") {
+                        let path = rest.trim();
+                        let lines = g.lines;
+                        match cp.read_file_to_string_with_limit(Path::new(path), lines) {
+                            Ok((content, truncated)) => {
+                                let mut s = format!("== file:{} ==\n{}", path, content);
+                                if truncated { s.push_str("\n… (file content truncated)"); }
+                                parts.push(s);
+                            }
+                            Err(e) => parts.push(format!("== file:{} ==\n[ERROR] {}", path, e)),
+                        }
+                    } else if let Some(rest) = tgt.strip_prefix("dir:") {
+                        let path = rest.trim();
+                        match cp.list_directory_smart(Path::new(path)) {
+                            Ok(items) => parts.push(format!("== dir:{} ==\n{}", path, items.join("\n"))),
+                            Err(e) => parts.push(format!("== dir:{} ==\n[ERROR] {}", path, e)),
+                        }
+                    } else if let Some(pat) = tgt.strip_prefix("glob:") {
+                        let mut acc = Vec::new();
+                        match glob::glob(pat) {
+                            Ok(paths) => {
+                                for entry in paths {
+                                    match entry {
+                                        Ok(p) => acc.push(p.display().to_string()),
+                                        Err(e) => acc.push(format!("[glob error] {}", e)),
+                                    }
+                                }
+                            }
+                            Err(e) => acc.push(format!("[glob pattern error] {}", e)),
+                        }
+                        parts.push(format!("== glob:{} ==\n{}", pat, if acc.is_empty() { "(no matches)".into() } else { acc.join("\n") }));
+                    } else if let Some(url) = tgt.strip_prefix("http:").or_else(|| tgt.strip_prefix("https:")) {
+                        let full = if tgt.starts_with("http:") { format!("http:{}", url) } else { format!("https:{}", url) };
+                        let client = reqwest::Client::new();
+                        let limit = g.limit_bytes.unwrap_or(1024 * 1024);
+                        match client.get(&full).send().await {
+                            Ok(resp) => {
+                                let status = resp.status();
+                                let bytes = match resp.bytes().await {
+                                    Ok(b) => {
+                                        let mut v = b.to_vec();
+                                        if v.len() > limit { v.truncate(limit); }
+                                        v
+                                    }
+                                    Err(e) => return (false, format!("GET {} error: {}", full, e)),
+                                };
+                                let text = String::from_utf8_lossy(&bytes).to_string();
+                                let mut out = format!("== http:{} ==\nSTATUS {}\n", full, status);
+                                out.push_str(&crate::ui::preview(&text, 80, 4000));
+                                parts.push(out);
+                            }
+                            Err(e) => parts.push(format!("== http:{} ==\n[ERROR] {}", full, e)),
+                        }
+                    } else if tgt == "mem:long" {
+                        match self.read_memory(Some("long_term")) {
+                            Ok(s) => parts.push(format!("== mem:long ==\n{}", s)),
+                            Err(e) => parts.push(format!("== mem:long ==\n[ERROR] {}", e)),
+                        }
+                    } else if tgt == "mem:short" {
+                        match self.read_memory(Some("short_term")) {
+                            Ok(s) => parts.push(format!("== mem:short ==\n{}", s)),
+                            Err(e) => parts.push(format!("== mem:short ==\n[ERROR] {}", e)),
+                        }
+                    } else if let Some(prompt) = tgt.strip_prefix("input:") {
+                        print!("{} ", prompt.trim());
+                        use std::io::{self, Write};
+                        let _ = io::stdout().flush();
+                        let mut line = String::new();
+                        match std::io::stdin().read_line(&mut line) {
+                            Ok(_) => parts.push(format!("== input ==\n{}", line.trim_end())),
+                            Err(e) => parts.push(format!("== input ==\n[ERROR] {}", e)),
+                        }
+                    } else if let Some(q) = tgt.strip_prefix("confirm:") {
+                        print!("{} [y/N]: ", q.trim());
+                        use std::io::{self, Write};
+                        let _ = io::stdout().flush();
+                        let mut line = String::new();
+                        match std::io::stdin().read_line(&mut line) {
+                            Ok(_) => {
+                                let yes = line.trim().eq_ignore_ascii_case("y");
+                                parts.push(format!("== confirm ==\n{}", if yes { "yes" } else { "no" }));
+                            }
+                            Err(e) => parts.push(format!("== confirm ==\n[ERROR] {}", e)),
+                        }
+                    } else {
+                        parts.push(format!("[WARN] unknown get target: {}", tgt));
+                    }
+                }
+                (true, parts.join("\n\n"))
+            }
+
+            ToolCall::Set(s) => {
+                use std::path::Path;
+                if s.target.starts_with("file:") {
+                    let path = s.target.trim_start_matches("file:");
+                    if s.target.starts_with("rm:") || s.target.starts_with("mkdir:") {
+                        // (fall-through cases handled below)
+                    }
+                    match self.command_processor.write_file_to_path(Path::new(path), &s.body, s.append) {
+                        Ok(()) => (true, format!("wrote {} (append={})", path, s.append)),
+                        Err(e) => (false, format!("write {} failed: {}", path, e)),
+                    }
+                } else if s.target.starts_with("mkdir:") {
+                    let path = s.target.trim_start_matches("mkdir:");
+                    match std::fs::create_dir_all(path) {
+                        Ok(()) => (true, format!("mkdir -p {}", path)),
+                        Err(e) => (false, format!("mkdir {} failed: {}", path, e)),
+                    }
+                } else if s.target.starts_with("rm:") {
+                    if !s.confirm {
+                        return (false, "refused rm without confirm=true".into());
+                    }
+                    let path = s.target.trim_start_matches("rm:");
+                    match std::fs::remove_file(path).or_else(|_| std::fs::remove_dir_all(path)) {
+                        Ok(()) => (true, format!("removed {}", path)),
+                        Err(e) => (false, format!("remove {} failed: {}", path, e)),
+                    }
+                } else if s.target.starts_with("mem:") {
+                    let which = if s.target.ends_with("long") { "long_term" } else { "short_term" };
+                    match self.write_memory(which, &s.body) {
+                        Ok(()) => (true, format!("memory {} updated", which)),
+                        Err(e) => (false, format!("memory write failed: {}", e)),
+                    }
+                } else {
+                    (false, format!("unsupported set target: {}", s.target))
+                }
+            }
+
+            ToolCall::Run(r) => {
+                // HTTP mode
+                if let Some(h) = r.http {
+                    let client = reqwest::Client::new();
+                    let mut req = match h.method.to_uppercase().as_str() {
+                        "GET" => client.get(&h.url),
+                        "POST" => client.post(&h.url),
+                        "PUT" => client.put(&h.url),
+                        "PATCH" => client.patch(&h.url),
+                        "DELETE" => client.delete(&h.url),
+                        _ => return (false, format!("unsupported HTTP method {}", h.method)),
+                    };
+                    for (k, v) in h.headers {
+                        req = req.header(k, v);
+                    }
+                    if let Some(b) = h.body.clone() {
+                        req = req.body(b);
+                    }
+                    match req.send().await {
+                        Ok(resp) => {
+                            let status = resp.status();
+                            let text = resp.text().await.unwrap_or_default();
+                            (status.is_success(), format!("STATUS {}\n{}", status, crate::ui::preview(&text, 80, 8000)))
+                        }
+                        Err(e) => (false, format!("http error: {}", e)),
+                    }
+                // SHELL one-liner
+                } else if r.sh_one_liner {
+                    let cmd = r.code.unwrap_or_default();
+                    match self.command_processor.execute_command_async(&cmd, None).await {
+                        Ok((0, out)) => (true, out),
+                        Ok((code, out)) => (false, format!("exit code {}\n{}", code, out)),
+                        Err(e) => (false, format!("exec error: {}", e)),
+                    }
+                // SCRIPT
+                } else {
+                    let lang = r.lang.clone().unwrap_or_default();
+                    let code = r.code.unwrap_or_default();
+                    // Reuse current run_script implementation by piping through a temp file
+                    use std::{fs, time::Duration};
+                    use tempfile::Builder;
+
+                    fn map_lang(lang: &str) -> Option<(&'static str, &'static str)> {
+                        match lang.to_ascii_lowercase().as_str() {
+                            "python" | "py" => Some(("py", "python3")),
+                            "node" | "javascript" | "js" => Some(("js", "node")),
+                            "bash" | "sh" => Some(("sh", "bash")),
+                            "powershell" | "pwsh" => Some(("ps1", "pwsh")),
+                            "ruby" | "rb" => Some(("rb", "ruby")),
+                            "php" => Some(("php", "php")),
+                            _ => None,
                         }
                     }
-                    Err(e) => (false, format!("Failed to execute command: {}", e)),
-                }
-            }
-            ToolCall::ReadFile { path, lines } => {
-                match self.command_processor.read_file_to_string_with_limit(Path::new(&path), lines) {
-                    Ok((content, truncated)) => {
-                        let result = if truncated { format!("{}\nNote: File content was truncated", content) } else { content };
-                        (true, result)
+
+                    let Some((ext, interp)) = map_lang(&lang) else {
+                        return (false, format!("unsupported lang {}", lang));
+                    };
+
+                    let tmp = match Builder::new().prefix("prime_ucm_").suffix(&format!(".{}", ext)).tempfile() {
+                        Ok(f) => f,
+                        Err(e) => return (false, format!("tempfile error: {}", e)),
+                    };
+                    if let Err(e) = fs::write(tmp.path(), &code) {
+                        return (false, format!("write temp script failed: {}", e));
                     }
-                    Err(e) => (false, format!("Failed to read file '{}': {}", path, e)),
-                }
-            }
-            ToolCall::WriteFile { path, content, append } => {
-                match self.command_processor.write_file_to_path(Path::new(&path), &content, append) {
-                    Ok(()) => (true, format!("Successfully wrote to {}", path)),
-                    Err(e) => (false, format!("Failed to write file '{}': {}", path, e)),
-                }
-            }
-            ToolCall::ListDir { path } => {
-                match self.command_processor.list_directory_smart(Path::new(&path)) {
-                    Ok(items) => {
-                        let body = if items.is_empty() { "Directory is empty".into() } else { items.join("\n") };
-                        (true, body)
-                    }
-                    Err(e) => (false, format!("Failed to list directory '{}': {}", path, e)),
-                }
-            }
-            ToolCall::WriteMemory { memory_type, content } => {
-                match self.write_memory(&memory_type, &content) {
-                    Ok(()) => (true, format!("Successfully wrote to {} memory", memory_type)),
-                    Err(e) => (false, format!("Failed to write to {} memory: {}", memory_type, e)),
-                }
-            }
-            ToolCall::ClearMemory { memory_type } => {
-                match self.clear_memory(&memory_type) {
-                    Ok(()) => (true, format!("Successfully cleared {} memory", memory_type)),
-                    Err(e) => (false, format!("Failed to clear {} memory: {}", memory_type, e)),
-                }
-            }
-            ToolCall::RunScript { lang, args, code, timeout_secs } => {
-                use std::{env, fs, process::Command, time::Duration};
-                use tempfile::Builder;
 
-                // map language → (file extension, interpreter argv[0])
-                fn map_lang(lang: &str) -> Option<(&'static str, &'static str)> {
-                    match lang.to_ascii_lowercase().as_str() {
-                        "python" | "py" => Some(("py", "python3")),
-                        "node" | "javascript" | "js" => Some(("js", "node")),
-                        "bash" | "sh" => Some(("sh", "bash")),
-                        "powershell" | "pwsh" => Some(("ps1", "pwsh")),
-                        "ruby" | "rb" => Some(("rb", "ruby")),
-                        "php" => Some(("php", "php")),
-                        _ => None,
-                    }
-                }
+                    let mut cmd = tokio::process::Command::new(interp);
+                    cmd.arg(tmp.path());
+                    if let Some(a) = &r.args { cmd.arg(a); }
+                    cmd.stdout(std::process::Stdio::piped())
+                       .stderr(std::process::Stdio::piped());
 
-                let Some((ext, interp)) = map_lang(&lang) else {
-                    return (false, format!("Unsupported lang '{}'", lang));
-                };
-
-                let tmp = match Builder::new().prefix("prime_script_").suffix(&format!(".{}", ext)).tempfile() {
-                    Ok(f) => f,
-                    Err(e) => return (false, format!("tempfile error: {}", e)),
-                };
-                if let Err(e) = fs::write(tmp.path(), &code) {
-                    return (false, format!("write temp script failed: {}", e));
-                }
-
-                // build command line
-                let mut cmd = Command::new(interp);
-                cmd.arg(tmp.path());
-                if let Some(a) = &args {
-                    // naive split: let the shell-like args be passed as one token; advanced parsing can be added.
-                    cmd.arg(a);
-                }
-                cmd.stdout(std::process::Stdio::piped())
-                   .stderr(std::process::Stdio::piped());
-
-                // spawn + timeout
-                let duration = Duration::from_secs(timeout_secs.unwrap_or(60));
-                match tokio::time::timeout(duration, async {
-                    tokio::process::Command::from(cmd).output().await
-                }).await {
-                    Err(_) => (false, format!("script timed out after {:?}.", duration)),
-                    Ok(Ok(out)) => {
-                        let code = out.status.code().unwrap_or(-1);
-                        let mut merged = out.stdout;
-                        if !out.stderr.is_empty() {
-                            merged.extend_from_slice(b"\n\nSTDERR:\n");
-                            merged.extend_from_slice(&out.stderr);
+                    let duration = std::time::Duration::from_secs(r.timeout_secs.unwrap_or(60));
+                    match tokio::time::timeout(duration, async { cmd.output().await }).await {
+                        Err(_) => (false, format!("script timed out after {:?}", duration)),
+                        Ok(Ok(out)) => {
+                            let code = out.status.code().unwrap_or(-1);
+                            let mut merged = out.stdout;
+                            if !out.stderr.is_empty() {
+                                merged.extend_from_slice(b"\n\nSTDERR:\n");
+                                merged.extend_from_slice(&out.stderr);
+                            }
+                            let text = String::from_utf8_lossy(&merged).to_string();
+                            if code == 0 { (true, text) } else { (false, format!("exit code {}\n{}", code, text)) }
                         }
-                        let text = String::from_utf8_lossy(&merged).to_string();
-                        if code == 0 { (true, text) }
-                        else { (false, format!("exit code {}\n{}", code, text)) }
+                        Ok(Err(e)) => (false, format!("spawn failed: {}", e)),
                     }
-                    Ok(Err(e)) => (false, format!("spawn failed: {}", e)),
                 }
             }
         }
