@@ -21,6 +21,8 @@ print("hello"); x=1+1; print(x)
 Hello
 ```
 
+### Success example
+
 ```ucm result#r1 for="r1"
 {
   "status": "ok",
@@ -30,6 +32,8 @@ Hello
   "warnings": []
 }
 ```
+
+### Error example
 
 ```ucm result#r1 for="r1"
 {
@@ -48,5 +52,8 @@ Hello
 - `run sh` streams to `STREAM__*.log`; `result` summarizes final state.
 - HTTP is **read-only** unless `mutate=true` and rationale provided.
 - No guessing URLs; explicit `url` only.
+- `#` at the beginning of a line inside a UCM fence body is a comment and will be ignored by the runtime.
+- `stdin` attribute accepts `on|off` (default: `off`).
+- Allowed HTTP methods by default: `GET|HEAD`. Mutation requires `mutate=true` + rationale.
 
 See **docs/logging.md** for how results are recorded and replayed.

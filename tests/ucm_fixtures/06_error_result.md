@@ -1,3 +1,4 @@
+```ucm run#r3 lang="python" timeout="1ms"
 print("too slow")
 ```
 

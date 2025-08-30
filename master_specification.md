@@ -112,7 +112,6 @@ Persist: prompts, fences, tool calls, artifacts, retrievals, validator outputs, 
 * **Code execution (PAL/PoT):** short scripts to compute/validate; always return `result` JSON
 * **Formal solvers (optional):** constrained solvers exposed via `run`
 * **Function/MCP adapters:** represented as `run` with clear attrs; outputs captured in `result`
-* **Memory:** short‑term summaries + vector store of prior runs/docs; retrieval steps logged under `retrieval/`
 * **Evidence Locker (Memory):** Human-readable markdown memories under `.prime/memory/` are indexed by an embedded full-text search engine (**Bleve**). On write, tags + full text are indexed with tokenization, normalization, stemming, and stop-word removal; queries are ranked via BM25. Index files live entirely on disk (`.prime/memory/index.bleve/`), preserving Prime’s file-first design while enabling fast, high-quality retrieval.
 
 ---
@@ -157,12 +156,12 @@ Persist: prompts, fences, tool calls, artifacts, retrievals, validator outputs, 
     "cpu_limit": 1.0,
     "mem_mb": 512
   },
-  "relevance": {                       
+  "relevance": {
     "triggers": [
       {"if_task_contains": ["rate limit", "quota"]},
       {"if_file_glob": "**/*.log"}
     ],
-    "embedding_hints": ["api policy", "throttling"]
+    "search_keywords": ["api policy", "throttling", "rate limit"]
   },
   "risks": ["mutating", "high-cost"],
   "tags": ["text", "parse"],
@@ -223,7 +222,7 @@ Persist: prompts, fences, tool calls, artifacts, retrievals, validator outputs, 
 * **Eligibility function** (evaluated per turn):
 
   * Hard triggers (task text, file globs, MIME, repo path)
-  * Embedding similarity between task text and tool `summary`/`tags`
+  * Bleve query combining task text with tool `search_keywords`, `summary`, and `tags`
   * Mode‑aware caps: M1–M2 → top **3–5** tools; M3–M4 → **6–8**
   * Safety filters (risk, network, mutating) based on user policy
 
@@ -249,6 +248,8 @@ Persist: prompts, fences, tool calls, artifacts, retrievals, validator outputs, 
 * Default **no network**, **read‑only FS**, strict CPU/mem/timeouts
 * Allowlist interpreters (`python`, `sh`, `powershell`)
 * Permission elevation requires explicit ToolCard flags + confirmation
+
+The sandbox will be implemented using simple OS-level process controls and timeouts. Container-based solutions like Docker are deferred as a future enhancement to maintain a low-dependency footprint.
 
 ---
 
@@ -284,7 +285,7 @@ Persist: prompts, fences, tool calls, artifacts, retrievals, validator outputs, 
 **Caching keys:**
 
 * `get`: hash(verb, attrs#id‑less, locator, range, version)
-* `run`: hash(verb, attrs#id‑less, toolchain version, body, env allowlist, cwd snapshot)
+* `run`: hash(verb, attrs#id‑less, toolchain version, body, env allowlist, exec_cwd_abs_hash)
 * `set`: hash(target, bytes, append)
 
 ---

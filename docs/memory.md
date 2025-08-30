@@ -4,10 +4,14 @@ Prime keeps human-readable memories (markdown) and a fast on-disk index (Bleve),
 
 ## Paths
 
+```
+
 .prime/
 memory/
 index.bleve/        # Bleve index (managed by library)
 docs/               # optional snapshots
+
+```
 
 ## What is indexed
 

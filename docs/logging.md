@@ -9,14 +9,14 @@
 
 .prime/
 memory/
-index.bleve/          # NEW: Bleve on-disk index (managed by library)
+index.bleve/          # Bleve on-disk index (managed by library)
 docs/                 # optional: human notes snapshots
 sessions/\<session\_id>/
 caps.json
 clg.json
 model.md
 runs/<ts>\_<slug>/
-env.json                 # NEW: snapshot of exe path, backend/model, tool palette, allowlisted env
+env.json            # exe path, backend/model, tool palette, allowlisted env
 0001\_USER.md
 0002\_PLAN.md
 0003\_COMMAND\_\_g1\_get.md
@@ -32,10 +32,13 @@ retrieval/
 0003\_rag.topk.json
 0003\_rag.sources.md
 
+```
 **Caching (content-addressed)**
 - `get`: hash(verb, attrs#id-less, locator, range, version)
-- `run`: hash(verb, attrs#id-less, toolchain version, body, env allowlist, cwd snapshot)
+- `run`: hash(verb, attrs#id-less, toolchain version, body, env allowlist, exec_cwd_abs_hash)
 - `set`: hash(target, bytes, append)
+
+**Field definition:** `exec_cwd_abs_hash` is the SHA-256 of the absolute working directory of the executed process (usually the per-run sandbox root). This prevents cross-directory cache collisions.
 
 **Replay**
 - Replays `STREAM__*`; serves cached `result` when `cache_hit=true`.
