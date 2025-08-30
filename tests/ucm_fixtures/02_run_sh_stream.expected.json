@@ -1,0 +1,9 @@
+{
+  "id": "r1",
+  "verb": "run",
+  "attrs": {
+    "sh": true,
+    "timeout": "2s"
+  },
+  "body": "echo PRIME"
+}

@@ -1,0 +1,5 @@
+{
+  "id": "sT3",
+  "verb": "set",
+  "attrs": { "path": ".prime/registry/index.json", "mode": "update" }
+}

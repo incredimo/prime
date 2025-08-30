@@ -1,0 +1,11 @@
+{
+  "mode": "M2",
+  "promotion_rule": "3 clean turns",
+  "demotion_rule": "2 consecutive guardrail hits",
+  "limits": {
+    "plan_size": "1-2 actions",
+    "verification": "verify each step",
+    "sampling": "self-consistency 3-5",
+    "tool_bias": "strong"
+  }
+}

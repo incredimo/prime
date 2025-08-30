@@ -1,0 +1,8 @@
+{
+  "id": "g1",
+  "verb": "get",
+  "attrs": {
+    "path": "./README.md",
+    "range": "1..10"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "scores": {
+    "grammar_fidelity": 0.9,
+    "instruction_following": 0.85,
+    "decomposition": 0.7,
+    "grounded_reasoning": 0.6,
+    "self_correction": 0.75,
+    "tool_use_readiness": 0.65,
+    "cot_sensitivity": 0.4,
+    "context_discipline": 0.55
+  },
+  "brilliance_score": 0.66,
+  "mode": "M2",
+  "notes": "Example scores from tiny model run"
+}

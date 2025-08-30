@@ -1,0 +1,21 @@
+{
+  "scores": {
+    "grammar_fidelity": 0.9,
+    "instruction_following": 0.8,
+    "decomposition": 0.75,
+    "grounded_reasoning": 0.62,
+    "self_correction": 0.7,
+    "tool_use_readiness": 0.66,
+    "cot_sensitivity": 0.45,
+    "context_discipline": 0.58
+  },
+  "brilliance_score": 0.67,
+  "mode": "M2",
+  "probes": [
+    "p1_grammar",
+    "p2_instruction",
+    "p3_decompose",
+    "p4_fix_fence",
+    "p5_tool_decision"
+  ]
+}

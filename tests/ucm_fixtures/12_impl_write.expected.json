@@ -1,0 +1,5 @@
+{
+  "id": "sT2",
+  "verb": "set",
+  "attrs": { "path": ".tools/loggrep/impl.sh", "mode": "write" }
+}

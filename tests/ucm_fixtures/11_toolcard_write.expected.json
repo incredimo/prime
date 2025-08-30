@@ -1,0 +1,5 @@
+{
+  "id": "sT1",
+  "verb": "set",
+  "attrs": { "path": ".tools/loggrep/toolcard.json", "mode": "write" }
+}
