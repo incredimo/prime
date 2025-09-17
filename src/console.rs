@@ -48,26 +48,22 @@ pub fn display_init_info(
     workspace_dir: &PathBuf,
 ) {
     println!(
-        "  {} {:<18} {}",
-        "•".cyan().bold(),
+        "  {:<18} {}",
         "model".white().bold(),
         model.cyan()
     );
     println!(
-        "  {} {:<18} {}",
-        "•".cyan().bold(),
+        "  {:<18} {}",
         "provider".white().bold(),
         provider.cyan()
     );
     println!(
-        "  {} {:<18} {}",
-        "•".cyan().bold(),
+        "  {:<18} {}",
         "configuration".white().bold(),
         prime_config_base_dir.display().to_string().cyan()
     );
     println!(
-        "  {} {:<18} {}",
-        "•".cyan().bold(),
+        "  {:<18} {}",
         "workspace".white().bold(),
         workspace_dir.display().to_string().cyan()
     );

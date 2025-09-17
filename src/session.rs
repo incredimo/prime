@@ -1,3 +1,4 @@
+ 
 use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
@@ -11,6 +12,8 @@ use llm::chat::{ChatMessage, ChatMessageBuilder, ChatProvider, ChatRole};
 use crate::commands::CommandProcessor;
 use crate::memory::MemoryManager;
 use crate::parser::{self, ToolCall};
+
+const SPINNER_TICKS: &[&str] = &["⇣..", ".⇣.", "..⇣", ".⇣."];
 
 /// Holds the result of a single tool execution.
 #[derive(Debug)]
@@ -119,7 +122,7 @@ impl PrimeSession {
 
             if parsed.tool_calls.is_empty() {
                 if !parsed.natural_language.is_empty() {
-                    println!("\n{}", "✓ Task complete.".green());
+                    println!("\n{}", "Task complete.".green());
                 }
                 break;
             }
@@ -158,9 +161,13 @@ impl PrimeSession {
         messages.extend(history);
 
         let spinner = ProgressBar::new_spinner();
-        spinner.set_style(ProgressStyle::with_template("{spinner:.blue.bold} {msg}").unwrap());
-        spinner.set_message("Thinking...");
-        spinner.enable_steady_tick(std::time::Duration::from_millis(80));
+        spinner.set_style(
+            ProgressStyle::with_template("{spinner:.yellow.bold} {msg}")
+                .unwrap()
+                .tick_strings(&SPINNER_TICKS),
+        );
+        spinner.set_message("Generating response...");
+        spinner.enable_steady_tick(std::time::Duration::from_millis(120));
 
         let response = self.llm.chat(&messages).await.map_err(|e| {
             spinner.finish_and_clear();
@@ -168,12 +175,9 @@ impl PrimeSession {
         })?;
 
         spinner.finish_and_clear();
-        
-        // Add a small delay to show the completion message
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let full_response = response.to_string();
-        println!("{}", "  ✓ Response generated".green());
+        println!("{}", "  Response generated".dark_grey());
         self.save_log("Prime Response", &full_response)?;
         Ok(full_response)
     }
@@ -183,7 +187,6 @@ impl PrimeSession {
         let operating_system = std::env::consts::OS;
         let working_dir = std::env::current_dir()?.display().to_string();
 
-        // Simplified behavioral prompt focusing on core principles
         let behavioral_prompt = r#"
 You are PRIME, an AI terminal assistant designed to help users accomplish tasks efficiently.
 
@@ -219,7 +222,7 @@ RESPONSE FORMAT:
 - Follow the specific syntax for each action type
 
 TOOLS:
-- Only use the provided tools (shell, read_file, write_file, list_dir)
+- Only use the provided tools (shell, read_file, write_file, list_dir, write_memory, clear_memory)
 - Never reference tool names directly in user communications
 - Always follow tool-specific rules and constraints
 
@@ -237,81 +240,68 @@ TASK COMPLETION:
 - Offer next steps only when appropriate
 "#;
 
-        // The technical instructions that teach the LLM our specific syntax.
+        // BUG FIX: The previous technical prompt described a completely different syntax
+        // (`{{.execute}}`) than what the parser actually expects (`primeactions`).
+        // This new prompt correctly instructs the LLM on how to use the available tools.
         let technical_prompt = format!(
             r#"
-You are an AI assistant that interacts with the user's system by generating annotated Markdown code blocks.
+You are an AI assistant. Your goal is to help the user by executing commands on their system.
 
 **RESPONSE FORMAT**
 
-Your response should contain your thinking in plain text, followed by one or more annotated code blocks that represent your actions.
+Your response must contain your plan and reasoning in plain text. If you need to perform actions, you must follow it with a single `primeactions` fenced code block.
 
 **ACTION SYNTAX**
 
-The general syntax is a fenced code block with the language specified, followed by an attribute block defining the action and its arguments.
-
-```language {{.action [arg="value"]}}
-<content>
+```primeactions
+tool_name: arguments
+another_tool: some other arguments
 ```
 
-**AVAILABLE ACTIONS**
+**AVAILABLE TOOLS**
 
-1.  **Execute Code or a Command (`.execute`)**
-    - This is the most common action. It runs the content of the block.
-    - If the language is `shell`, the content is executed directly as a shell command.
-    - If the language is anything else (e.g., `python`, `javascript`), the content is saved to a temporary file and executed with the appropriate interpreter.
-    - You can provide a custom execution command via the `command` attribute. The placeholder `$content` will be replaced with the block's content, and `$file` will be replaced with the path to the temporary file.
-    - Examples:
-      ```shell {{.execute}}
-      ls -l --no-pager
-      ```
-      ```python {{.execute}}
-      import os
-      print(f"Current directory: {{os.getcwd()}}")
-      ```
-      ```python {{.execute command="python3 -c $content"}}
-      print("Executing with a custom command")
-      ```
+1.  `shell: <command>`
+    - Executes a shell command.
+    - Example: `shell: ls -l`
 
-2.  **Save or Create a File (`.save`)**
-    - Use the language of the code being written (e.g., `python`, `rust`, `json`).
-    - The `file_path` argument is **required**.
-    - The content of the block is the full content of the file.
+2.  `read_file: <path> [lines=start-end]`
+    - Reads a file. Optionally, you can specify a line range.
+    - Example: `read_file: src/main.rs lines=1-20`
+    - Example: `read_file: Cargo.toml`
+
+3.  `write_file: <path> [append=true]`
+    - Writes content to a file. Overwrites by default. Use `append=true` to append.
+    - The content to write must follow on new lines, terminated by `EOF_PRIME`.
     - Example:
-      ```python {{.save file_path="app.py"}}
-      def main():
-          print("Hello from app.py")
+      ```primeactions
+      write_file: new_file.txt
+      Hello, world!
+      This is a new file.
+      EOF_PRIME
       ```
 
-3.  **Edit a File (`.search` and `.replace`)**
-    - This is a **two-block operation**. You must first provide a `.search` block, immediately followed by a `.replace` block.
-    - Both blocks must have the same `file_path` argument.
-    - The content of the blocks are the exact code snippets for searching and replacing.
-    - Example: "I will find the old function...
-      ```python {{.search file_path="app.py"}}
-      def main():
-          print("old content")
-      ```
-      ...and replace it with the new version."
-      ```python {{.replace file_path="app.py"}}
-      def main():
-          print("new, updated content")
-      ```
+4.  `list_dir: <path>`
+    - Lists the contents of a directory.
+    - Example: `list_dir: .`
 
-4.  **Read a File (`.read`)**
-    - Use a generic block (no language specified, i.e., ```).
-    - The `file_path` argument is **required**.
-    - The `lines` argument (e.g., `lines="50-100"`) is optional.
-    - The content of the block is **always empty**.
+5.  `write_memory: <long_term|short_term>`
+    - Writes content to your memory. Use `long_term` for persistent info, `short_term` for temporary context.
+    - Content follows on new lines, terminated by `EOF_PRIME`.
     - Example:
-      ```{{.read file_path="app.py" lines="1-10"}}
+      ```primeactions
+      write_memory: short_term
+      The user wants to refactor the `console.rs` file.
+      EOF_PRIME
       ```
+
+6.  `clear_memory: <long_term|short_term>`
+    - Clears one of your memories.
+    - Example: `clear_memory: short_term`
+
 
 **TOOL RESULTS**
-After you perform an action, I will provide the result back to you in a simple, Markdown-friendly block for you to analyze.
-```tool_result for="execute" status="SUCCESS"
-<output of the command>
-```
+
+After you provide a `primeactions` block, I will execute the tools and return the output to you in the next turn, inside `<tool_output>` tags. You can then analyze the results and continue.
 
 <CONTEXT>
 OS: {operating_system}
@@ -319,16 +309,15 @@ Working Directory: {working_dir}
 {memory}
 </CONTEXT>
 
---- BEGIN USER BEHAVIORAL PROMPT ---
+--- BEGIN BEHAVIORAL PROMPT ---
 {behavioral_prompt}
---- END USER BEHAVIORAL PROMPT ---
+--- END BEHAVIORAL PROMPT ---
 
 Now, begin.
 "#
         );
 
-        // Note: Using `{{` and `}}` to escape the braces for the `format!` macro.
-        Ok(technical_prompt.replace("{{", "{").replace("}}", "}"))
+        Ok(technical_prompt)
     }
 
     pub async fn execute_actions(
@@ -336,78 +325,69 @@ Now, begin.
         tool_calls: Vec<ToolCall>,
     ) -> Result<Vec<ToolExecutionResult>> {
         let total_tools = tool_calls.len();
-        println!(
-            "\n{}",
-            format!("Executing {} tool(s)...", total_tools).cyan().bold()
-        );
-        
+        println!("\n{}", format!("╭─ Running {} tool(s)", total_tools).dark_grey());
+
         let mut all_results = Vec::new();
         for (index, tool_call) in tool_calls.into_iter().enumerate() {
-            println!(
-                "{}",
-                format!("  [{}/{}] {}", index + 1, total_tools, tool_call.to_string()).dim()
-            );
-            let result = self.execute_tool(tool_call).await;
+            let result = self.execute_tool(tool_call, index + 1, total_tools).await;
             all_results.push(result);
         }
-        
+
         // Print summary
         let success_count = all_results.iter().filter(|r| r.success).count();
+        let summary_msg = format!(
+            "╰─ Executed {} tool(s): {} successful, {} failed.",
+            total_tools,
+            success_count,
+            total_tools - success_count
+        );
+
         if success_count == total_tools {
-            println!(
-                "\n{}",
-                format!("✓ All {} tool(s) executed successfully", total_tools).green()
-            );
+            println!("{}", summary_msg.green());
         } else {
-            println!(
-                "\n{}",
-                format!("⚠ {} of {} tool(s) executed successfully", success_count, total_tools).yellow()
-            );
+            println!("{}", summary_msg.yellow());
         }
-        
+
         Ok(all_results)
     }
 
-    async fn execute_tool(&self, tool_call: ToolCall) -> ToolExecutionResult {
+    async fn execute_tool(
+        &self,
+        tool_call: ToolCall,
+        index: usize,
+        total_tools: usize,
+    ) -> ToolExecutionResult {
         let tool_call_str = tool_call.to_string();
         let start_time = std::time::Instant::now();
-        
-        // Print initial execution message
-        println!(
-            "\n{}",
-            format!("μ Executing: {}", tool_call_str).cyan().bold()
-        );
-        
-        // Create a progress bar for the tool execution
+        let tool_header = format!("[{}/{}] {}", index, total_tools, tool_call_str);
+
         let pb = ProgressBar::new_spinner();
-        pb.set_style(ProgressStyle::with_template("{spinner:.green.bold} {msg}").unwrap());
-        pb.set_message("Executing...");
-        pb.enable_steady_tick(std::time::Duration::from_millis(80));
+        pb.set_style(
+            ProgressStyle::with_template("{spinner:.yellow.bold} {msg}")
+                .unwrap()
+                .tick_strings(&SPINNER_TICKS),
+        );
+        pb.set_message(tool_header.clone());
+        pb.enable_steady_tick(std::time::Duration::from_millis(120));
 
         let (success, output) = match tool_call {
             ToolCall::Shell { command } => {
-                println!("{}", format!("  → Running command: {}", command).dim());
                 match self.command_processor.execute_command(&command, None) {
                     Ok((0, out)) => (true, out),
                     Ok((code, out)) => {
                         if code == -1 {
-                            // Command cancelled by user
                             (false, out)
                         } else {
-                            // Command failed with exit code
-                            (false, format!("Command failed with exit code {}\nOutput:\n{}", code, out))
+                            (
+                                false,
+                                format!("Command failed with exit code {}\nOutput:\n{}", code, out),
+                            )
                         }
-                    },
+                    }
                     Err(e) => (false, format!("Failed to execute command: {}", e)),
                 }
             }
             ToolCall::ReadFile { path, lines } => {
-                let lines_str = if let Some((s, e)) = lines {
-                    format!("lines {}-{}", s, e)
-                } else {
-                    "full file".to_string()
-                };
-                println!("{}", format!("  → Reading file: {} ({})", path, lines_str).dim());
                 match self
                     .command_processor
                     .read_file_to_string_with_limit(Path::new(&path), lines)
@@ -419,7 +399,7 @@ Now, begin.
                             content
                         };
                         (true, result)
-                    },
+                    }
                     Err(e) => (false, format!("Failed to read file '{}': {}", path, e)),
                 }
             }
@@ -428,8 +408,6 @@ Now, begin.
                 content,
                 append,
             } => {
-                let action = if append { "Appending to" } else { "Writing to" };
-                println!("{}", format!("  → {} file: {}", action, path).dim());
                 match self
                     .command_processor
                     .write_file_to_path(Path::new(&path), &content, append)
@@ -439,56 +417,49 @@ Now, begin.
                 }
             }
             ToolCall::ListDir { path } => {
-                println!("{}", format!("  → Listing directory: {}", path).dim());
-                match self
-                    .command_processor
-                    .list_directory_smart(Path::new(&path))
-                {
+                match self.command_processor.list_directory_smart(Path::new(&path)) {
                     Ok(items) => {
                         if items.is_empty() {
                             (true, "Directory is empty".to_string())
                         } else {
                             (true, items.join("\n"))
                         }
-                    },
+                    }
                     Err(e) => (false, format!("Failed to list directory '{}': {}", path, e)),
                 }
             }
-            ToolCall::WriteMemory { memory_type, content } => {
-                println!("{}", format!("  → Writing to {} memory", memory_type).dim());
-                match self
-                    .write_memory(&memory_type, &content)
-                {
-                    Ok(()) => (true, format!("Successfully wrote to {} memory", memory_type)),
-                    Err(e) => (false, format!("Failed to write to {} memory: {}", memory_type, e)),
-                }
-            }
-            ToolCall::ClearMemory { memory_type } => {
-                println!("{}", format!("  → Clearing {} memory", memory_type).dim());
-                match self
-                    .clear_memory(&memory_type)
-                {
-                    Ok(()) => (true, format!("Successfully cleared {} memory", memory_type)),
-                    Err(e) => (false, format!("Failed to clear {} memory: {}", memory_type, e)),
-                }
-            }
+            ToolCall::WriteMemory {
+                memory_type,
+                content,
+            } => match self.write_memory(&memory_type, &content) {
+                Ok(()) => (true, format!("Successfully wrote to {} memory", memory_type)),
+                Err(e) => (false, format!("Failed to write to {} memory: {}", memory_type, e)),
+            },
+            ToolCall::ClearMemory { memory_type } => match self.clear_memory(&memory_type) {
+                Ok(()) => (true, format!("Successfully cleared {} memory", memory_type)),
+                Err(e) => (false, format!("Failed to clear {} memory: {}", memory_type, e)),
+            },
         };
-        
-        // Finish the progress bar
+
         pb.finish_and_clear();
-        
-        // Print completion message with timing
         let duration = start_time.elapsed();
-        if success {
-            println!(
-                "{}",
-                format!("  ✓ Completed in {:?}", duration).green()
-            );
+
+        let status_str = if success {
+            format!("Completed in {:?}", duration).green().to_string()
         } else {
-            println!(
-                "{}",
-                format!("  ✗ Failed after {:?}", duration).red()
-            );
+            format!("Failed after {:?}", duration).red().to_string()
+        };
+        println!("│ {} ({})", tool_header.dim(), status_str);
+
+        if !output.trim().is_empty() {
+            for line in output.trim().lines() {
+                let formatted_line = if success {
+                    line.dim().to_string()
+                } else {
+                    line.red().to_string()
+                };
+                println!("│   {}", formatted_line);
+            }
         }
 
         ToolExecutionResult {

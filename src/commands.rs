@@ -32,6 +32,7 @@ fn looks_binary(buf: &[u8]) -> bool {
     buf.iter().take(256).any(|&b| b == 0)
 }
 
+// NOTE: This function is kept for binary detection, but its output is no longer printed directly.
 fn human_preview(data: &[u8]) -> String {
     if looks_binary(data) {
         return "[binary data omitted]".to_string();
@@ -85,8 +86,9 @@ impl CommandProcessor {
     // -------------------------------------------------- //
 
     pub fn execute_command(&self, command: &str, working_dir: Option<&Path>) -> Result<(i32, String)> {
-        let current_dir = working_dir.unwrap_or_else(|| Path::new("."));
-        println!("{}", format!("Executing in '{}': {}", current_dir.display(), command).cyan());
+        // Presentation is now handled by PrimeSession, so this print is silenced.
+        // let current_dir = working_dir.unwrap_or_else(|| Path::new("."));
+        // println!("{}", format!("Executing in '{}': {}", current_dir.display(), command).cyan());
 
         for pattern in &self.ask_me_before_patterns {
             if command.contains(pattern) {
@@ -102,7 +104,7 @@ impl CommandProcessor {
             }
         }
 
-        // Build argv for chosen shell
+        let current_dir = working_dir.unwrap_or_else(|| Path::new("."));
         let mut args = self.shell_args.clone();
         args.push(command.to_string());
 
@@ -116,7 +118,6 @@ impl CommandProcessor {
 
         let exit_code = output.status.code().unwrap_or(-1);
 
-        // We preview only a slice; store full merged output for return value.
         let mut merged = Vec::new();
         merged.extend_from_slice(&output.stdout);
         if !output.stderr.is_empty() {
@@ -124,11 +125,13 @@ impl CommandProcessor {
             merged.extend_from_slice(&output.stderr);
         }
 
-        let preview_text = human_preview(&merged);
-        println!("{}", format!("Command completed with exit code: {}", exit_code).dark_grey());
-        if !preview_text.is_empty() {
-            println!("{}", format!("Output preview:\n{}", preview_text).dark_grey());
-        }
+        // All presentation is handled by the session manager now for a cleaner,
+        // more consistent UI. These print statements have been removed.
+        // let preview_text = human_preview(&merged);
+        // println!("{}", format!("Command completed with exit code: {}", exit_code).dark_grey());
+        // if !preview_text.is_empty() {
+        //     println!("{}", format!("Output preview:\n{}", preview_text).dark_grey());
+        // }
 
         Ok((exit_code, String::from_utf8_lossy(&merged).into()))
     }
