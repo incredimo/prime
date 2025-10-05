@@ -1,10 +1,5 @@
-#![allow(warnings)]
 //! Entry point for Prime CLI
-//! -------------------------
-//! Adjustments in v0.1.8:
-//! * LLM temperature lowered to `0.2` for more deterministic action plans.
-//! * Cargo version bump is reflected in the banner.
-//! * Pulled `serde_json` into crate graph implicitly via `session.rs`.
+//! v0.2.0: Major overhaul with stateful execution, self-correction, and configuration files.
 
 mod commands;
 mod config;
@@ -14,13 +9,13 @@ mod session;
 mod parser;
 
 use std::env;
-use std::path::PathBuf;
 use std::process;
 
 use anyhow::{Context as AnyhowContext, Result};
 use crossterm::style::Stylize;
 use llm::builder::{LLMBackend, LLMBuilder};
 use session::PrimeSession;
+use crate::config::Config;
 
 pub const APP_NAME: &str = "prime";
 
@@ -28,7 +23,15 @@ pub const APP_NAME: &str = "prime";
 async fn main() -> Result<()> {
     console::display_banner();
 
-    let session = match init_session().await {
+    let config = match config::load_config() {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            eprintln!("{}", format!("[ERROR] Failed to load configuration: {}", e).red());
+            process::exit(1);
+        }
+    };
+
+    let session = match init_session(config).await {
         Ok(session) => session,
         Err(e) => {
             eprintln!("{}", format!("[ERROR] Initialization error: {}", e).red());
@@ -44,24 +47,27 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn init_session() -> Result<PrimeSession> {
-    // Get configuration from environment variables with defaults
-    let provider = env::var("LLM_PROVIDER").unwrap_or_else(|_| "google".to_string());
-    let model = env::var("LLM_MODEL").unwrap_or_else(|_| {
+async fn init_session(config: Config) -> Result<PrimeSession> {
+    let provider = env::var("LLM_PROVIDER").unwrap_or(config.provider);
+    let model_from_env = env::var("LLM_MODEL").ok();
+    
+    let model = model_from_env.or(config.model).unwrap_or_else(|| {
         match provider.as_str() {
             "google" => "gemini-2.5-flash".to_string(),
-            "ollama" => "gemma3".to_string(),
-            _ => "gemma3".to_string(),
+            "ollama" => "gemma2".to_string(),
+            _ => "gemma2".to_string(),
         }
     });
+
     let temperature = env::var("LLM_TEMPERATURE")
         .ok()
         .and_then(|s| s.parse::<f32>().ok())
-        .unwrap_or(0.2);
+        .unwrap_or(config.temperature);
+        
     let max_tokens = env::var("LLM_MAX_TOKENS")
         .ok()
         .and_then(|s| s.parse::<u32>().ok())
-        .unwrap_or(2048);
+        .unwrap_or(config.max_tokens);
 
     let prime_config_base_dir = dirs::home_dir()
         .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?
@@ -69,31 +75,33 @@ async fn init_session() -> Result<PrimeSession> {
 
     let workspace_dir = env::current_dir().context("Failed to get current working directory")?;
 
-    // Build LLM provider based on the selected provider
-    let (llm, provider_name, api_key_name) = match provider.as_str() {
+    let (llm, provider_name) = match provider.as_str() {
         "google" => {
-            let api_key = env::var("GEMINI_API_KEY").context("GEMINI_API_KEY environment variable not set")?;
+            let api_key = env::var("GEMINI_API_KEY").unwrap_or(config.gemini_api_key);
+            if api_key.is_empty() {
+                return Err(anyhow::anyhow!("GEMINI_API_KEY not set in environment or config.toml. Please get a key from Google AI Studio."));
+            }
             let llm = LLMBuilder::new()
                 .backend(LLMBackend::Google)
-                .api_key(api_key.clone())
+                .api_key(api_key)
                 .model(model.clone())
                 .max_tokens(max_tokens)
                 .temperature(temperature)
                 .build()
                 .context("Failed to build LLM provider (Google)")?;
-            (llm, "Google AI Platform", "GEMINI_API_KEY")
+            (llm, "Google AI Platform")
         },
         "ollama" => {
-            let api_key = env::var("OLLAMA_API_KEY").unwrap_or_default(); // Ollama might not need an API key
+            let api_key = env::var("OLLAMA_API_KEY").unwrap_or(config.ollama_api_key);
             let llm = LLMBuilder::new()
                 .backend(LLMBackend::Ollama)
-                .api_key(api_key.clone())
+                .api_key(api_key)
                 .model(model.clone())
                 .max_tokens(max_tokens)
                 .temperature(temperature)
                 .build()
                 .context("Failed to build LLM provider (Ollama)")?;
-            (llm, "Ollama", "OLLAMA_API_KEY")
+            (llm, "Ollama")
         },
         _ => {
             return Err(anyhow::anyhow!("Unsupported LLM provider: {}", provider));

@@ -9,7 +9,7 @@
 
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 use anyhow::{anyhow, Context, Result};
@@ -25,26 +25,12 @@ use crate::config;
 const MAX_FILE_READ_LINES: usize = 1000;
 const MAX_FILE_READ_BYTES: u64 = 1_048_576; // 1 MB
 const MAX_DIR_LISTING_CHILDREN_DISPLAY: usize = 20;
-const OUTPUT_PREVIEW_BYTES: usize = 1024;   // 1 KB preview for stdout/stderr
 
 #[inline]
 fn looks_binary(buf: &[u8]) -> bool {
     buf.iter().take(256).any(|&b| b == 0)
 }
 
-// NOTE: This function is kept for binary detection, but its output is no longer printed directly.
-fn human_preview(data: &[u8]) -> String {
-    if looks_binary(data) {
-        return "[binary data omitted]".to_string();
-    }
-
-    let text = String::from_utf8_lossy(data);
-    let mut out: String = text.chars().take(OUTPUT_PREVIEW_BYTES).collect();
-    if text.len() > OUTPUT_PREVIEW_BYTES {
-        out.push_str("\n... (output truncated)");
-    }
-    out
-}
 
 // ---------------------------------------------------------------------
 // CommandProcessor definition
@@ -151,6 +137,10 @@ impl CommandProcessor {
     pub fn list_directory_smart(&self, path: &Path) -> Result<Vec<String>> {
         list_directory_smart(path, &self.ignored_path_patterns)
     }
+
+    pub fn is_command_destructive(&self, command: &str) -> bool {
+        self.ask_me_before_patterns.iter().any(|pattern| command.contains(pattern))
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -160,8 +150,8 @@ impl CommandProcessor {
 fn read_file_to_string_with_limit(path: &Path, line_range: Option<(usize, usize)>) -> Result<(String, bool)> {
     let file = fs::File::open(path).with_context(|| format!("Failed to open file: {}", path.display()))?;
     let reader = BufReader::new(file);
-    let mut truncated = false;
     let content: String;
+    let truncated: bool;
 
     if let Some((start, end)) = line_range {
         if start == 0 || start > end {

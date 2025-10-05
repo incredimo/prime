@@ -1,22 +1,3 @@
-//! parser.rs – extract Plan & Execution and Action Block from LLM messages.
-//! ----------------------------------------------------------------------------
-//! v0.1.9 fixes:
-//! * Corrected regex – we accidentally looked for the **literal** "\\s". Now we
-//!   match real whitespace so fenced ````primeactions` blocks are detected again.
-//! * Still supports `<end_of_tool_output/>` sentinel, unchanged public API.
-//!
-//! Grammar recap:
-//!
-//! ```text
-//! ## Plan & Execution
-//! …free text…
-//!
-//! ```primeactions
-//! shell: ls -la
-//! read_file: Cargo.toml lines=1-20
-//! ```
-//! ```
-
 use anyhow::{anyhow, Context, Result};
 use regex::Regex;
 
@@ -26,6 +7,7 @@ pub enum ToolCall {
     ReadFile { path: String, lines: Option<(usize, usize)> },
     WriteFile { path: String, content: String, append: bool },
     ListDir { path: String },
+    ChangeDir { path: String },
     WriteMemory { memory_type: String, content: String },
     ClearMemory { memory_type: String },
 }
@@ -36,7 +18,6 @@ pub struct ParsedResponse {
     pub tool_calls: Vec<ToolCall>,
 }
 
-/// Helper to parse write_file arguments like "path/to/file append=true"
 fn parse_write_args(args_str: &str) -> (String, bool) {
     let mut append = false;
     let mut path = args_str.to_string();
@@ -50,7 +31,6 @@ fn parse_write_args(args_str: &str) -> (String, bool) {
     (path.trim().to_string(), append)
 }
 
-/// Helper to parse read_file arguments like "path/to/file lines=10-20"
 fn parse_read_args(args_str: &str) -> Result<(String, Option<(usize, usize)>)> {
     if let Some(pos) = args_str.rfind(" lines=") {
         let path = args_str[..pos].trim().to_string();
@@ -74,22 +54,17 @@ fn parse_read_args(args_str: &str) -> Result<(String, Option<(usize, usize)>)> {
 pub fn parse_llm_response(input: &str) -> Result<ParsedResponse> {
     let mut resp = ParsedResponse::default();
 
-    // 1️⃣ Extract fenced action block – (?s) makes . match newlines
     let fence_re = Regex::new(r"(?s)```[ \t]*primeactions[ \t]*\n(.*?)```")
         .map_err(|e| anyhow::anyhow!("Failed to compile regex for parsing primeactions block: {}", e))?;
     let Some(caps) = fence_re.captures(input) else {
-        // No action block – treat whole message as natural text
         resp.natural_language = input.trim().to_string();
         return Ok(resp);
     };
 
     let actions_block = caps.get(1).unwrap().as_str();
-
-    // text before first fence = natural language
     let start_idx = caps.get(0).unwrap().start();
     resp.natural_language = input[..start_idx].trim().to_string();
 
-    // 2️⃣ Parse lines inside the fence
     let mut lines_iter = actions_block.lines().peekable();
 
     while let Some(line) = lines_iter.next() {
@@ -99,7 +74,7 @@ pub fn parse_llm_response(input: &str) -> Result<ParsedResponse> {
         }
         let (tool_name, args_str) = match trimmed.split_once(':') {
             Some((t, a)) => (t.trim(), a.trim()),
-            None => continue, // skip malformed lines
+            None => continue,
         };
 
         let tool_call = match tool_name {
@@ -107,6 +82,9 @@ pub fn parse_llm_response(input: &str) -> Result<ParsedResponse> {
                 command: args_str.into(),
             },
             "list_dir" => ToolCall::ListDir {
+                path: args_str.into(),
+            },
+            "cd" | "change_dir" => ToolCall::ChangeDir {
                 path: args_str.into(),
             },
             "read_file" => {
@@ -148,7 +126,7 @@ pub fn parse_llm_response(input: &str) -> Result<ParsedResponse> {
                     append,
                 }
             }
-            _ => continue, // ignore unknown tools
+            _ => continue,
         };
         resp.tool_calls.push(tool_call);
     }

@@ -2,7 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
  
 
 /// Manages long-term and short-term memory for the assistant

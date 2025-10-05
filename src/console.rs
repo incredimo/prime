@@ -9,7 +9,7 @@ use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
 use rustyline::hint::Hinter;
 use rustyline::history::DefaultHistory;
-use rustyline::validate::{Validator, MatchingBracketValidator};
+use rustyline::validate::Validator;
 use rustyline::{Context as RustylineContext, Editor, Helper};
 
 use crate::session::PrimeSession;
@@ -19,7 +19,6 @@ const BANNER: &str = r#"
  █▀▀ █▀▄ █ █ █ █ ██▄"#;
 
 pub fn display_banner() {
-    let line_char = "━";
     // 1️⃣ print logo
     println!("{}", BANNER.bold().white());
 
@@ -38,7 +37,7 @@ pub fn display_banner() {
     println!("{} {}", "PWD".bold().white(), pwd.cyan());
 
     // 4️⃣ horizontal rule, then we finish with a newline so Rustyline starts clean
-    println!("{}", line_char.repeat(70).dark_grey());
+    println!("{}", "─".repeat(70).dark_grey());
 }
 
 pub fn display_init_info(
