@@ -37,7 +37,7 @@ pub fn display_banner() {
     println!("{} {}", "PWD".bold().white(), pwd.cyan());
 
     // 4️⃣ horizontal rule, then we finish with a newline so Rustyline starts clean
-    println!("{}", "─".repeat(70).dark_grey());
+    println!("{}", "━".repeat(70).dark_grey());
 }
 
 pub fn display_init_info(
@@ -50,7 +50,7 @@ pub fn display_init_info(
     println!("provider {}", provider);
     println!("configuration {}", prime_config_base_dir.display());
     println!("workspace {}", workspace_dir.display());
-    println!("{}", "─".repeat(70).dark_grey());
+    println!("{}", "━".repeat(70).dark_grey());
 }
 
 pub async fn run_repl(mut session: PrimeSession) -> Result<()> {
