@@ -46,26 +46,10 @@ pub fn display_init_info(
     prime_config_base_dir: &PathBuf,
     workspace_dir: &PathBuf,
 ) {
-    println!(
-        "  {:<18} {}",
-        "model".white().bold(),
-        model.cyan()
-    );
-    println!(
-        "  {:<18} {}",
-        "provider".white().bold(),
-        provider.cyan()
-    );
-    println!(
-        "  {:<18} {}",
-        "configuration".white().bold(),
-        prime_config_base_dir.display().to_string().cyan()
-    );
-    println!(
-        "  {:<18} {}",
-        "workspace".white().bold(),
-        workspace_dir.display().to_string().cyan()
-    );
+    println!("model {}", model);
+    println!("provider {}", provider);
+    println!("configuration {}", prime_config_base_dir.display());
+    println!("workspace {}", workspace_dir.display());
     println!("{}", "─".repeat(70).dark_grey());
 }
 

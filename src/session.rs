@@ -7,12 +7,17 @@ use anyhow::{Context as AnyhowContext, Result};
 use crossterm::style::Stylize;
 use indicatif::{ProgressBar, ProgressStyle};
 use llm::chat::{ChatMessage, ChatMessageBuilder, ChatProvider, ChatRole};
+use textwrap::{wrap, Options};
 
 use crate::commands::CommandProcessor;
 use crate::memory::MemoryManager;
 use crate::parser::{self, ToolCall};
 
 const SPINNER_TICKS: &[&str] = &["⇣", " ", "⇣", " "];
+
+fn wrap_text(text: &str, width: usize) -> String {
+    wrap(text, Options::new(width).break_words(false)).join("\n")
+}
 
 #[derive(Debug)]
 pub struct ToolExecutionResult {
@@ -94,6 +99,7 @@ impl PrimeSession {
 
         const MAX_CONSECUTIVE_TOOL_TURNS: usize = 10;
         let mut tool_turn_count = 0;
+        let mut has_displayed_actions = false;
 
         loop {
             if tool_turn_count >= MAX_CONSECUTIVE_TOOL_TURNS {
@@ -104,25 +110,59 @@ impl PrimeSession {
             let response_text = self.generate_prime_response().await?;
             let parsed = parser::parse_llm_response(&response_text)?;
 
-            if !parsed.natural_language.is_empty() {
-                println!("{}", parsed.natural_language.clone().white());
-                io::stdout().flush()?;
-            }
-
             if parsed.tool_calls.is_empty() {
+                // This is a final response (no tools to execute)
                 if !parsed.natural_language.is_empty() {
-                    println!("\n{}", "Task complete.".green());
+                    if has_displayed_actions {
+                        // This is the explanatory response after tool execution
+                        println!();
+                        let wrapped = wrap_text(&parsed.natural_language, 68); // Account for ┃ prefix
+                        for line in wrapped.lines() {
+                            println!("{}", format!("┃{}", line).white());
+                        }
+                        println!("{}", "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".white());
+                    } else {
+                        // This is a direct response without tools
+                        let wrapped = wrap_text(&parsed.natural_language, 70);
+                        for line in wrapped.lines() {
+                            println!("{}", line.white());
+                        }
+                    }
                 }
                 break;
             }
 
             tool_turn_count += 1;
 
-            println!("\n{}", "┏━ PROPOSED ACTION PLAN ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".bold().yellow());
-            for (i, tool) in parsed.tool_calls.iter().enumerate() {
-                println!("┃ {}. {}", i + 1, tool.to_string().yellow());
+            // Display AI planning response
+            if !parsed.natural_language.is_empty() {
+                let wrapped = wrap_text(&parsed.natural_language, 70);
+                for line in wrapped.lines() {
+                    println!("{}", line.white());
+                }
+                io::stdout().flush()?;
             }
-            println!("{}", "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".bold().yellow());
+
+            // Display actions
+            println!();
+            println!("{}", "┏━ actions".yellow());
+            for tool in &parsed.tool_calls {
+                match tool {
+                    ToolCall::Shell { command } => println!("{}", format!("┃ {}", command).yellow()),
+                    ToolCall::ReadFile { path, lines } => {
+                        if let Some((start, end)) = lines {
+                            println!("{}", format!("┃ read_file: {} lines={}-{}", path, start, end).yellow());
+                        } else {
+                            println!("{}", format!("┃ read_file: {}", path).yellow());
+                        }
+                    }
+                    ToolCall::WriteFile { path, .. } => println!("{}", format!("┃ write_file: {}", path).yellow()),
+                    ToolCall::ListDir { path } => println!("{}", format!("┃ list_dir: {}", path).yellow()),
+                    ToolCall::ChangeDir { path } => println!("{}", format!("┃ cd: {}", path).yellow()),
+                    ToolCall::WriteMemory { memory_type, .. } => println!("{}", format!("┃ write_memory: {}", memory_type).yellow()),
+                    ToolCall::ClearMemory { memory_type } => println!("{}", format!("┃ clear_memory: {}", memory_type).yellow()),
+                }
+            }
 
             // Check if any tool calls are destructive
             let is_destructive = parsed.tool_calls.iter().any(|tool_call| {
@@ -135,7 +175,8 @@ impl PrimeSession {
             });
 
             let should_execute = if is_destructive {
-                print!("This plan contains potentially destructive commands. Execute? (y/N): ");
+                println!("{}", "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ destructive ━━━━━".red());
+                print!("{}", "Execute? (y/N): ".red());
                 io::stdout().flush().context("Failed to flush stdout")?;
 
                 let mut confirmation = String::new();
@@ -143,20 +184,20 @@ impl PrimeSession {
                 confirmation.trim().eq_ignore_ascii_case("y")
             } else {
                 // Auto-execute after 2-second countdown for non-destructive commands
-                for i in (1..=20).rev() {
-                    print!("\rAuto-executing in {:.1}s... (press Ctrl+C to cancel)", i as f32 / 10.0);
-                    io::stdout().flush().context("Failed to flush stdout")?;
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                }
-                println!("\rExecuting plan...{}", " ".repeat(30));
+                println!("{}", "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ executing in 2s ━━━━━".yellow());
+                std::thread::sleep(std::time::Duration::from_secs(2));
                 true
             };
 
             if !should_execute {
-                println!("{}", "Plan cancelled by user.".red());
+                println!();
+                println!("{}", "┃ Plan cancelled by user.".red());
+                println!("{}", "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".red());
                 self.save_log("System", "Plan cancelled by user.")?;
                 break;
             }
+
+            has_displayed_actions = true;
 
             match self.execute_actions(parsed.tool_calls).await {
                 Ok(successful_results) => {
@@ -165,7 +206,9 @@ impl PrimeSession {
                 }
                 Err(failed_result) => {
                     let error_prompt = self.format_tool_failure_for_llm(&failed_result)?;
-                    println!("\n{}", "A tool failed. The AI will attempt to self-correct.".bold().red());
+                    println!();
+                    println!("{}", "┃ A tool failed. The AI will attempt to self-correct.".red());
+                    println!("{}", "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".red());
                     self.save_log("Tool Failure", &error_prompt)?;
                 }
             }
@@ -326,40 +369,26 @@ Now, begin.
         &mut self,
         tool_calls: Vec<ToolCall>,
     ) -> Result<Vec<ToolExecutionResult>, ToolExecutionResult> {
-        let total_tools = tool_calls.len();
-        println!("\n{}", format!("╭─ running {} tools", total_tools).dark_grey());
-
+        let start_time = std::time::Instant::now();
         let mut all_results = Vec::new();
-        for (index, tool_call) in tool_calls.into_iter().enumerate() {
-            let result = self.execute_tool(tool_call, index + 1, total_tools).await;
+
+        for tool_call in tool_calls.into_iter() {
+            let result = self.execute_tool(tool_call).await;
             if !result.success {
-                let summary_msg = format!("╰─ execution halted. {} of {} tools failed.", 1, total_tools);
-                println!("{}", summary_msg.red());
                 return Err(result);
             }
             all_results.push(result);
         }
 
-        let summary_msg = format!("╰─ executed {} tools successfully.", total_tools);
-        println!("{}", summary_msg.green());
+        let duration = start_time.elapsed();
+        let duration_str = format!("{:.1}s", duration.as_secs_f32());
+        println!("{}", format!("╰────────────────────────────────────── completed in {} ────────", duration_str).green());
 
         Ok(all_results)
     }
 
-    async fn execute_tool(
-        &mut self,
-        tool_call: ToolCall,
-        index: usize,
-        total_tools: usize,
-    ) -> ToolExecutionResult {
+    async fn execute_tool(&mut self, tool_call: ToolCall) -> ToolExecutionResult {
         let tool_call_str = tool_call.to_string();
-        let start_time = std::time::Instant::now();
-        let tool_header = format!("[{}/{}] {}", index, total_tools, tool_call_str);
-
-        let pb = ProgressBar::new_spinner();
-        pb.set_style(ProgressStyle::with_template("{spinner:.yellow.bold} {msg}").unwrap().tick_strings(&SPINNER_TICKS));
-        pb.set_message(tool_header.clone());
-        pb.enable_steady_tick(std::time::Duration::from_millis(120));
 
         let (success, output) = match tool_call {
             ToolCall::ChangeDir { path } => {
@@ -421,16 +450,10 @@ Now, begin.
             },
         };
 
-        pb.finish_and_clear();
-        let duration = start_time.elapsed();
-
-        let status_str = if success { format!("Completed in {:?}", duration).green().to_string() } else { format!("Failed after {:?}", duration).red().to_string() };
-        println!("│ {} ({})", tool_header.dim(), status_str);
-
+        // Display output with │ prefix
         if !output.trim().is_empty() {
             for line in output.trim().lines() {
-                let formatted_line = if success { line.dim().to_string() } else { line.red().to_string() };
-                println!("│   {}", formatted_line);
+                println!("{}", format!("│ {}", line).dim());
             }
         }
 
