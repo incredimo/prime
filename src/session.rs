@@ -12,8 +12,8 @@ use textwrap::{wrap, Options};
 use crate::commands::CommandProcessor;
 use crate::memory::MemoryManager;
 use crate::parser::{self, ToolCall};
-
-const SPINNER_TICKS: &[&str] = &["⇣", " ", "⇣", " "];
+// use nice spinner animation [
+const SPINNER_TICKS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 fn wrap_text(text: &str, width: usize) -> String {
     wrap(text, Options::new(width).break_words(false)).join("\n")
@@ -382,7 +382,7 @@ Now, begin.
 
         let duration = start_time.elapsed();
         let duration_str = format!("{:.1}s", duration.as_secs_f32());
-        println!("{}", format!("╰────────────────────────────────────── completed in {} ────────", duration_str).green());
+        println!("{}", format!("┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ completed in {}", duration_str).green());
 
         Ok(all_results)
     }

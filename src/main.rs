@@ -53,7 +53,7 @@ async fn init_session(config: Config) -> Result<PrimeSession> {
     
     let model = model_from_env.or(config.model).unwrap_or_else(|| {
         match provider.as_str() {
-            "google" => "gemini-2.5-flash".to_string(),
+            "google" => "gemini-2.5-flash-lite".to_string(),
             "ollama" => "gemma2".to_string(),
             _ => "gemma2".to_string(),
         }

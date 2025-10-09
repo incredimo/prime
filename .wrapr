@@ -34,17 +34,19 @@
     "**/Cargo.lock"
   ],
   "selected_files": [
-    ".\\src\\memory.rs",
     ".\\src\\session.rs",
+    ".\\src\\config.rs",
+    ".\\src\\config_utils.rs",
     ".\\src\\styling.rs",
+    ".\\design.md",
+    ".\\src\\memory.rs",
     ".\\src\\console.rs",
     ".\\src\\commands.rs",
-    ".\\src\\config_utils.rs",
     ".\\src\\main.rs",
-    ".\\Cargo.toml",
-    ".\\src\\config.rs",
     ".\\src\\parser.rs",
-    ".\\src"
+    ".\\src",
+    ".\\README.md",
+    ".\\Cargo.toml"
   ],
   "last_limit": null,
   "max_file_size": 1000000
