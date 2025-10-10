@@ -1,7 +1,7 @@
+
 use std::borrow::Cow;
 use std::io::{self, Write};
 use std::path::PathBuf;
-
 use anyhow::{Context, Result};
 use crossterm::style::Stylize;
 use rustyline::completion::{Completer, Pair};
@@ -11,32 +11,25 @@ use rustyline::hint::Hinter;
 use rustyline::history::DefaultHistory;
 use rustyline::validate::Validator;
 use rustyline::{Context as RustylineContext, Editor, Helper};
-
 use crate::session::PrimeSession;
+use std::env;
 
 const BANNER: &str = r#"
  █▀█ ▄▀█ █ █▀█▀▄ █▀▀
  █▀▀ █▀▄ █ █ █ █ ██▄"#;
 
 pub fn display_banner() {
-    // 1️⃣ print logo
     println!("{}", BANNER.bold().white());
-
-    // 2️⃣ overlay version on first line (same trick as original v0.1.7)
     let version = env!("CARGO_PKG_VERSION");
     print!("\x1B[2A\x1B[25C");
     let vtag = format!(" V{} ", version);
     println!("{}", vtag.on_white().black().bold());
-
-    // 3️⃣ PWD under the logo, aligned with version
     let pwd = std::env::current_dir()
         .unwrap_or_else(|_| PathBuf::from("."))
         .display()
         .to_string();
     print!("\x1B[25C");
     println!("{} {}", "PWD".bold().white(), pwd.cyan());
-
-    // 4️⃣ horizontal rule, then we finish with a newline so Rustyline starts clean
     println!("{}", "━".repeat(70).dark_grey());
 }
 
@@ -57,42 +50,35 @@ pub async fn run_repl(mut session: PrimeSession) -> Result<()> {
     let mut editor = Editor::<PrimeHelper, DefaultHistory>::new()
         .context("Failed to initialize rustyline editor")?;
     editor.set_helper(Some(PrimeHelper {}));
-    
-    // Load history from file
+   
     let prime_config_dir = dirs::home_dir()
         .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?
         .join(".prime");
     let history_file = prime_config_dir.join("history.txt");
-    
+   
     if history_file.exists() {
         editor.load_history(&history_file).unwrap_or_else(|e| {
             eprintln!("{}", format!("Warning: Failed to load history: {}", e).yellow());
         });
     }
-
-    // **ANSI-free prompt** so Rustyline counts width correctly
     let prompt = "» ".to_string();
-
     loop {
         match editor.readline(&prompt) {
             Ok(line) => {
                 let _ = editor.add_history_entry(line.as_str());
                 let input = line.trim();
-
                 if input.is_empty() {
                     continue;
                 }
                 if input.eq_ignore_ascii_case("exit") || input.eq_ignore_ascii_case("quit") {
                     break;
                 }
-
                 if input.starts_with('!') {
-                    if !handle_special_command(&input[1..], &session)? {
+                    if !handle_special_command(&input[1..], &mut session)? {
                         break;
                     }
                     continue;
                 }
-
                 if let Err(e) = session.process_input(input).await {
                     eprintln!("{}", format!("[ERROR] {}", e).red());
                 }
@@ -107,26 +93,24 @@ pub async fn run_repl(mut session: PrimeSession) -> Result<()> {
             }
         }
     }
-    
-    // Save history to file
+   
     if !prime_config_dir.exists() {
         std::fs::create_dir_all(&prime_config_dir).unwrap_or_else(|e| {
             eprintln!("{}", format!("Warning: Failed to create config directory: {}", e).yellow());
         });
     }
-    
+   
     editor.save_history(&history_file).unwrap_or_else(|e| {
         eprintln!("{}", format!("Warning: Failed to save history: {}", e).yellow());
     });
-    
+   
     Ok(())
 }
 
-fn handle_special_command(cmd_line: &str, session: &PrimeSession) -> Result<bool> {
+fn handle_special_command(cmd_line: &str, session: &mut PrimeSession) -> Result<bool> {
     let parts: Vec<&str> = cmd_line.splitn(2, ' ').collect();
     let command = parts[0].to_lowercase();
     let args = if parts.len() > 1 { parts[1] } else { "" };
-
     match command.as_str() {
         "clear" | "cls" => {
             print!("\x1B[2J\x1B[1;1H");
@@ -135,17 +119,18 @@ fn handle_special_command(cmd_line: &str, session: &PrimeSession) -> Result<bool
         }
         "help" => {
             println!("{}", "Available Special Commands:".white().bold());
-            println!("  {:<25} - Show this help message.", "!help".cyan());
-            println!("  {:<25} - Clear the terminal screen.", "!clear | !cls".cyan());
+            println!(" {:<25} - Show this help message.", "!help".cyan());
+            println!(" {:<25} - Clear the terminal screen.", "!clear | !cls".cyan());
             println!(
-                "  {:<25} - Show the full conversation log.",
+                " {:<25} - Show the full conversation log.",
                 "!log".cyan()
             );
             println!(
-                "  {:<25} - Read long-term or short-term memory.",
+                " {:<25} - Read long-term or short-term memory.",
                 "!memory [long|short]".cyan()
             );
-            println!("  {:<25} - Exit Prime.", "!exit | !quit".cyan());
+            println!(" {:<25} - List all available tools.", "!tools".cyan());
+            println!(" {:<25} - Exit Prime.", "!exit | !quit".cyan());
             Ok(true)
         }
         "log" => {
@@ -167,6 +152,10 @@ fn handle_special_command(cmd_line: &str, session: &PrimeSession) -> Result<bool
                 Ok(content) => println!("{}", content),
                 Err(e) => eprintln!("{}", format!("Error reading memory: {}", e).red()),
             }
+            Ok(true)
+        }
+        "tools" => {
+            println!("{}", session.list_tools());
             Ok(true)
         }
         "exit" | "quit" => Ok(false),
@@ -215,16 +204,15 @@ impl Highlighter for PrimeHelper {
 
 impl Hinter for PrimeHelper {
     type Hint = String;
+
     fn hint(&self, line: &str, pos: usize, _ctx: &RustylineContext<'_>) -> Option<String> {
         if pos < line.len() {
             return None;
         }
-
         let commands = [
             "exit", "quit", "!help", "!clear", "!cls", "!log",
-            "!memory", "!memory long", "!memory short"
+            "!memory", "!memory long", "!memory short", "!tools"
         ];
-
         for cmd in commands {
             if cmd.starts_with(line) && line.len() < cmd.len() {
                 let suffix = &cmd[line.len()..];
@@ -253,6 +241,7 @@ impl Completer for PrimeHelper {
                 ("!memory", "memory"),
                 ("!memory long", "memory long"),
                 ("!memory short", "memory short"),
+                ("!tools", "tools"),
                 ("!exit", "exit"),
                 ("!quit", "quit"),
             ];
@@ -280,3 +269,4 @@ impl Validator for PrimeHelper {
         Ok(rustyline::validate::ValidationResult::Valid(None))
     }
 }
+ 

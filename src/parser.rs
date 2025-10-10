@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Context, Result};
-use regex::Regex;
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum ToolCall {
@@ -10,6 +9,8 @@ pub enum ToolCall {
     ChangeDir { path: String },
     WriteMemory { memory_type: String, content: String },
     ClearMemory { memory_type: String },
+    ScriptTool { name: String, args: Vec<String> },
+    CreateTool { name: String, desc: String, args: String, script_content: String },
 }
 
 #[derive(Debug, Default)]
@@ -21,7 +22,6 @@ pub struct ParsedResponse {
 fn parse_write_args(args_str: &str) -> (String, bool) {
     let mut append = false;
     let mut path = args_str.to_string();
-
     if let Some(pos) = path.rfind(" append=true") {
         if pos + " append=true".len() == path.len() {
             append = true;
@@ -34,7 +34,7 @@ fn parse_write_args(args_str: &str) -> (String, bool) {
 fn parse_read_args(args_str: &str) -> Result<(String, Option<(usize, usize)>)> {
     if let Some(pos) = args_str.rfind(" lines=") {
         let path = args_str[..pos].trim().to_string();
-        let range_str = args_str[pos + " lines=".len()..].trim();
+        let range_str = &args_str[pos + " lines=".len()..].trim();
         let parts: Vec<&str> = range_str.split('-').collect();
         if parts.len() == 2 {
             let start = parts[0]
@@ -51,22 +51,89 @@ fn parse_read_args(args_str: &str) -> Result<(String, Option<(usize, usize)>)> {
     Ok((args_str.trim().to_string(), None))
 }
 
+fn find_primeactions_block(input: &str) -> (String, Vec<&str>) {
+    let lines: Vec<&str> = input.lines().collect();
+    let mut natural = String::new();
+    let mut block_lines = Vec::new();
+    let mut in_block = false;
+    for line in lines {
+        let trimmed = line.trim();
+        if !in_block {
+            if trimmed.starts_with("```primeactions") {
+                in_block = true;
+                continue;
+            }
+            natural.push_str(line);
+            natural.push('\n');
+        } else {
+            if trimmed.starts_with("```") {
+                in_block = false;
+            } else {
+                block_lines.push(line);
+            }
+        }
+    }
+    (natural.trim().to_string(), block_lines)
+}
+
+fn parse_create_tool_args(args_str: &str) -> Result<(String, String, String)> {
+    let mut chars = args_str.chars().peekable();
+    let mut name = String::new();
+    let mut desc = String::new();
+    let mut args_spec = String::new();
+    let mut current_key = String::new();
+    loop {
+        while chars.peek().map_or(false, |&ch| ch.is_ascii_whitespace()) {
+            chars.next();
+        }
+        if chars.peek().is_none() {
+            break;
+        }
+        current_key.clear();
+        if let Some(ch) = chars.next() {
+            current_key.push(ch);
+        }
+        while chars.peek().map_or(false, |&ch| ch != '=') {
+            if let Some(ch) = chars.next() {
+                current_key.push(ch);
+            }
+        }
+        if chars.peek().map_or(true, |&ch| ch != '=') {
+            continue;
+        }
+        chars.next();
+        while chars.peek().map_or(false, |&ch| ch.is_ascii_whitespace()) {
+            chars.next();
+        }
+        if chars.peek().map_or(true, |&ch| ch != '"') {
+            continue;
+        }
+        chars.next();
+        let mut value = String::new();
+        while let Some(ch) = chars.next() {
+            if ch == '"' {
+                break;
+            }
+            value.push(ch);
+        }
+        match current_key.trim() {
+            "name" => name = value,
+            "desc" => desc = value,
+            "args" => args_spec = value,
+            _ => {}
+        }
+    }
+    if name.is_empty() || desc.is_empty() || args_spec.is_empty() {
+        return Err(anyhow!("Invalid create_tool args: missing name, desc, or args"));
+    }
+    Ok((name, desc, args_spec))
+}
+
 pub fn parse_llm_response(input: &str) -> Result<ParsedResponse> {
     let mut resp = ParsedResponse::default();
-
-    let fence_re = Regex::new(r"(?s)```[ \t]*primeactions[ \t]*\n(.*?)```")
-        .map_err(|e| anyhow::anyhow!("Failed to compile regex for parsing primeactions block: {}", e))?;
-    let Some(caps) = fence_re.captures(input) else {
-        resp.natural_language = input.trim().to_string();
-        return Ok(resp);
-    };
-
-    let actions_block = caps.get(1).unwrap().as_str();
-    let start_idx = caps.get(0).unwrap().start();
-    resp.natural_language = input[..start_idx].trim().to_string();
-
-    let mut lines_iter = actions_block.lines().peekable();
-
+    let (natural, block_lines) = find_primeactions_block(input);
+    resp.natural_language = natural;
+    let mut lines_iter = block_lines.into_iter().peekable();
     while let Some(line) = lines_iter.next() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -76,7 +143,6 @@ pub fn parse_llm_response(input: &str) -> Result<ParsedResponse> {
             Some((t, a)) => (t.trim(), a.trim()),
             None => continue,
         };
-
         let tool_call = match tool_name {
             "shell" => ToolCall::Shell {
                 command: args_str.into(),
@@ -126,10 +192,27 @@ pub fn parse_llm_response(input: &str) -> Result<ParsedResponse> {
                     append,
                 }
             }
-            _ => continue,
+            "create_tool" => {
+                let (name, desc, args_spec) = parse_create_tool_args(args_str)?;
+                let mut content_lines = Vec::new();
+                while let Some(cl) = lines_iter.next() {
+                    if cl.trim() == "EOF_PRIME" {
+                        break;
+                    }
+                    content_lines.push(cl);
+                }
+                let script_content = content_lines.join("\n");
+                ToolCall::CreateTool { name, desc, args: args_spec, script_content }
+            }
+            _ => {
+                let parts: Vec<_> = args_str.split_whitespace().map(|s| s.to_string()).collect();
+                ToolCall::ScriptTool {
+                    name: tool_name.to_string(),
+                    args: parts,
+                }
+            }
         };
         resp.tool_calls.push(tool_call);
     }
-
     Ok(resp)
 }

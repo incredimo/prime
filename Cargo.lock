@@ -1401,7 +1401,7 @@ dependencies = [
 
 [[package]]
 name = "prime"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1411,7 +1411,6 @@ dependencies = [
  "glob",
  "indicatif",
  "llm",
- "regex",
  "reqwest",
  "rustyline 16.0.0",
  "serde",

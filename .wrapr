@@ -35,18 +35,18 @@
   ],
   "selected_files": [
     ".\\src\\session.rs",
-    ".\\src\\config.rs",
-    ".\\src\\config_utils.rs",
-    ".\\src\\styling.rs",
+    ".\\src",
     ".\\design.md",
-    ".\\src\\memory.rs",
     ".\\src\\console.rs",
     ".\\src\\commands.rs",
     ".\\src\\main.rs",
-    ".\\src\\parser.rs",
-    ".\\src",
+    ".\\src\\config_utils.rs",
     ".\\README.md",
-    ".\\Cargo.toml"
+    ".\\src\\parser.rs",
+    ".\\Cargo.toml",
+    ".\\src\\memory.rs",
+    ".\\src\\styling.rs",
+    ".\\src\\config.rs"
   ],
   "last_limit": null,
   "max_file_size": 1000000
