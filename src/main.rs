@@ -1,5 +1,5 @@
 //! Entry point for Prime CLI
-//! v0.2.0: Major overhaul with stateful execution, self-correction, and configuration files.
+//! v0.2.5: Enhanced with streaming responses and rich display
 
 mod commands;
 mod config;
@@ -7,6 +7,8 @@ mod console;
 mod memory;
 mod session;
 mod parser;
+mod streaming;
+mod display;
 
 use std::env;
 use std::process;

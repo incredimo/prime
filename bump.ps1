@@ -106,9 +106,11 @@ function Test-TargetInstalled {
 # build for windows
 Write-Output "🔨 Building Windows binary..."
 if (Test-TargetInstalled "x86_64-pc-windows-msvc") {
-    cargo build -Z unstable-options --release --bin prime --target x86_64-pc-windows-msvc --artifact-dir $releaseFolder
+    cargo build --release --bin prime --target x86_64-pc-windows-msvc
     if ($LASTEXITCODE -eq 0) {
         Write-Output "✅ Successfully built Windows binary"
+        # Copy the binary to release folder
+        Copy-Item -Path "./target/x86_64-pc-windows-msvc/release/prime.exe" -Destination "$releaseFolder/prime.exe" -Force
     } else {
         Write-Output "❌ Failed to build Windows binary"
         exit 1
@@ -122,9 +124,11 @@ if (Test-TargetInstalled "x86_64-pc-windows-msvc") {
 # build for linux
 Write-Output "🔨 Building Linux binary..."
 if (Test-TargetInstalled "x86_64-unknown-linux-gnu") {
-    cargo build -Z unstable-options --release --bin prime --target x86_64-unknown-linux-gnu --artifact-dir $releaseFolder
+    cargo build --release --bin prime --target x86_64-unknown-linux-gnu
     if ($LASTEXITCODE -eq 0) {
         Write-Output "✅ Successfully built Linux binary"
+        # Copy the binary to release folder
+        Copy-Item -Path "./target/x86_64-unknown-linux-gnu/release/prime" -Destination "$releaseFolder/prime" -Force
     } else {
         Write-Output "❌ Failed to build Linux binary"
         exit 1
