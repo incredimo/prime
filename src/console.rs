@@ -9,7 +9,7 @@ use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
 use rustyline::hint::Hinter;
 use rustyline::history::DefaultHistory;
-use rustyline::validate::Validator;
+use rustyline::validate::{ValidationContext, ValidationResult, Validator};
 use rustyline::{Context as RustylineContext, Editor, Helper};
 use crate::session::PrimeSession;
 use std::env;
@@ -264,9 +264,56 @@ impl Completer for PrimeHelper {
 impl Validator for PrimeHelper {
     fn validate(
         &self,
-        _ctx: &mut rustyline::validate::ValidationContext,
-    ) -> Result<rustyline::validate::ValidationResult, ReadlineError> {
-        Ok(rustyline::validate::ValidationResult::Valid(None))
+        ctx: &mut ValidationContext,
+    ) -> Result<ValidationResult, ReadlineError> {
+        let input = ctx.input();
+        let mut stack = Vec::new();
+        let mut in_quote = None;
+        let mut escaped = false;
+
+        for c in input.chars() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+
+            if c == '\\' {
+                escaped = true;
+                continue;
+            }
+
+            if let Some(quote) = in_quote {
+                if c == quote {
+                    in_quote = None;
+                }
+            } else {
+                match c {
+                    '"' | '\'' => in_quote = Some(c),
+                    '(' | '[' | '{' => stack.push(c),
+                    ')' => {
+                        if stack.last() == Some(&'(') {
+                            stack.pop();
+                        }
+                    }
+                    ']' => {
+                        if stack.last() == Some(&'[') {
+                            stack.pop();
+                        }
+                    }
+                    '}' => {
+                        if stack.last() == Some(&'{') {
+                            stack.pop();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        if !stack.is_empty() || in_quote.is_some() || escaped {
+            return Ok(ValidationResult::Incomplete);
+        }
+
+        Ok(ValidationResult::Valid(None))
     }
 }
- 

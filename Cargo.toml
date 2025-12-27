@@ -1,6 +1,6 @@
 [package]
 name = "prime"
-version = "0.2.9"
+version = "0.2.10"
 edition = "2021"
 description = "A CLI tool for interacting with LLMs"
 license = "MIT OR Apache-2.0"
@@ -23,6 +23,7 @@ toml = "0.8.12"
 textwrap = "0.16.1"
 tokio-stream = "0.1"
 async-stream = "0.3"
+
 
 
 

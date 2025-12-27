@@ -1,20 +1,17 @@
- 
- 
+
 use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context as AnyhowContext, Result};
 use crossterm::style::Stylize;
-use indicatif::{ProgressBar, ProgressStyle};
+use futures::StreamExt;
 use llm::chat::{ChatMessage, ChatMessageBuilder, ChatProvider, ChatRole};
 use textwrap::{wrap, Options};
 use crate::commands::CommandProcessor;
 use crate::memory::MemoryManager;
 use crate::parser::{self, ToolCall};
 use glob::glob;
-
-const SPINNER_TICKS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 fn wrap_text(text: &str, width: usize) -> String {
     wrap(text, Options::new(width).break_words(false)).join("\n")
@@ -79,7 +76,9 @@ impl fmt::Display for ToolCall {
 }
 
 pub struct PrimeSession {
+    #[allow(dead_code)]
     pub base_dir: PathBuf,
+    #[allow(dead_code)]
     pub session_id: String,
     pub session_log_path: PathBuf,
     pub llm: Box<dyn ChatProvider>,
@@ -242,34 +241,20 @@ impl PrimeSession {
                 println!("{}", "Reached maximum tool execution turns. The session might be in a loop. Please try a new prompt.".red());
                 break;
             }
-            let response_text = self.generate_prime_response().await?;
+            let response_text = self.generate_prime_response_streaming().await?;
             let parsed = parser::parse_llm_response(&response_text)?;
             if parsed.tool_calls.is_empty() {
-                if !parsed.natural_language.is_empty() {
-                    if has_displayed_actions {
-                        println!();
-                        let wrapped = wrap_text(&parsed.natural_language, 68);
-                        for line in wrapped.lines() {
-                            println!("{}", format!("┃{}", line).white());
-                        }
-                        println!("{}", "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".white());
-                    } else {
-                        let wrapped = wrap_text(&parsed.natural_language, 70);
-                        for line in wrapped.lines() {
-                            println!("{}", line.white());
-                        }
+                if !parsed.natural_language.is_empty() && has_displayed_actions {
+                    println!();
+                    let wrapped = wrap_text(&parsed.natural_language, 68);
+                    for line in wrapped.lines() {
+                        println!("{}", format!("┃{}", line).white());
                     }
+                    println!("{}", "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".white());
                 }
                 break;
             }
             tool_turn_count += 1;
-            if !parsed.natural_language.is_empty() {
-                let wrapped = wrap_text(&parsed.natural_language, 70);
-                for line in wrapped.lines() {
-                    println!("{}", line.white());
-                }
-                io::stdout().flush()?;
-            }
             println!();
             println!("{}", "┏━ actions".yellow());
             for tool in &parsed.tool_calls {
@@ -329,30 +314,136 @@ impl PrimeSession {
         Ok(())
     }
 
+    /// Saves a log entry using XML-style delimiters to avoid conflicts with markdown code blocks
     fn save_log(&self, title: &str, content: &str) -> Result<()> {
         let mut file = OpenOptions::new().create(true).append(true).open(&self.session_log_path)?;
         let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
         writeln!(file, "\n## {} ({})", title, timestamp)?;
-        writeln!(file, "```")?;
+        writeln!(file, "<CONTENT>")?;
         writeln!(file, "{}", content.trim())?;
-        writeln!(file, "```")?;
+        writeln!(file, "</CONTENT>")?;
         Ok(())
     }
 
-    async fn generate_prime_response(&mut self) -> Result<String> {
+    /// Generate LLM response with real-time streaming output
+    async fn generate_prime_response_streaming(&mut self) -> Result<String> {
         let history = self.get_history(Some(10))?;
         let mut messages = vec![ChatMessage::user().content(self.get_system_prompt()?).build()];
         messages.extend(history);
+
+        // Try streaming first, fall back to non-streaming if not supported
+        match self.llm.chat_stream(&messages).await {
+            Ok(stream) => {
+                let mut stream = stream;
+                let mut full_response = String::new();
+                let mut displayed_text = String::new();
+                let mut in_primeactions = false;
+
+                while let Some(token_result) = stream.next().await {
+                    match token_result {
+                        Ok(token) => {
+                            full_response.push_str(&token);
+                            
+                            // Check if we're entering or in a primeactions block
+                            if full_response.contains("```primeactions") {
+                                if !in_primeactions {
+                                    in_primeactions = true;
+                                    // Display any text before the primeactions block
+                                    if let Some(idx) = full_response.rfind("```primeactions") {
+                                        let before = &full_response[displayed_text.len()..idx];
+                                        if !before.is_empty() {
+                                            print!("{}", before.white());
+                                            io::stdout().flush()?;
+                                            displayed_text.push_str(before);
+                                        }
+                                    }
+                                }
+                                // Don't display primeactions content during streaming
+                                continue;
+                            }
+                            
+                            // Check if primeactions block ended
+                            if in_primeactions {
+                                let temp_after_start = if let Some(idx) = full_response.find("```primeactions") {
+                                    &full_response[idx + 15..]
+                                } else {
+                                    ""
+                                };
+                                if temp_after_start.contains("\n```") {
+                                    in_primeactions = false;
+                                    if let Some(close_idx) = temp_after_start.find("\n```") {
+                                        let after_block = &temp_after_start[close_idx + 4..];
+                                        displayed_text = full_response.clone();
+                                        if !after_block.is_empty() {
+                                            print!("{}", after_block.white());
+                                            io::stdout().flush()?;
+                                        }
+                                    }
+                                }
+                                continue;
+                            }
+                            
+                            // Stream regular text in real-time
+                            let new_content = &full_response[displayed_text.len()..];
+                            if !new_content.is_empty() {
+                                print!("{}", new_content.white());
+                                io::stdout().flush()?;
+                                displayed_text = full_response.clone();
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("\n{}", format!("[Stream Error] {}", e).red());
+                            break;
+                        }
+                    }
+                }
+
+                // Ensure newline after streaming completes
+                if !displayed_text.is_empty() && !displayed_text.ends_with('\n') {
+                    println!();
+                }
+
+                self.save_log("Prime Response", &full_response)?;
+                Ok(full_response)
+            }
+            Err(_) => {
+                // Fall back to non-streaming if streaming is not supported
+                self.generate_prime_response_fallback().await
+            }
+        }
+    }
+
+    /// Fallback non-streaming response generation
+    async fn generate_prime_response_fallback(&mut self) -> Result<String> {
+        use indicatif::{ProgressBar, ProgressStyle};
+        const SPINNER_TICKS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+        let history = self.get_history(Some(10))?;
+        let mut messages = vec![ChatMessage::user().content(self.get_system_prompt()?).build()];
+        messages.extend(history);
+
         let spinner = ProgressBar::new_spinner();
         spinner.set_style(ProgressStyle::with_template("{spinner:.yellow.bold} {msg}").unwrap().tick_strings(&SPINNER_TICKS));
         spinner.set_message("Generating response...");
         spinner.enable_steady_tick(std::time::Duration::from_millis(120));
+
         let response = self.llm.chat(&messages).await.map_err(|e| {
             spinner.finish_and_clear();
             e
         })?;
         spinner.finish_and_clear();
+
         let full_response = response.to_string();
+        
+        // Display the response (since streaming wasn't used)
+        let parsed = parser::parse_llm_response(&full_response)?;
+        if !parsed.natural_language.is_empty() {
+            let wrapped = wrap_text(&parsed.natural_language, 70);
+            for line in wrapped.lines() {
+                println!("{}", line.white());
+            }
+        }
+
         self.save_log("Prime Response", &full_response)?;
         Ok(full_response)
     }
@@ -506,6 +597,7 @@ Use create_tool proactively to build specialized tools for recurring or complex 
         if !self.discovered_tools.is_empty() {
             tools_section.push_str("\nFor custom tools, use `tool_name: arg1 arg2` (space-separated).");
         }
+        let shell_hint = if cfg!(target_os = "windows") { "PowerShell" } else { "Bash" };
         let technical_prompt = format!(
             r#"
 You are an AI assistant. Your goal is to help the user by executing commands on their system.
@@ -521,6 +613,7 @@ another_tool: some other arguments
 After you provide a `primeactions` block, I will execute the tools and return the output to you. If a command fails, I will return only the error, and you must formulate a new plan to fix it.
 <CONTEXT>
 OS: {operating_system}
+Shell Context: {shell_hint}
 Working Directory: {working_dir}
 {memory}
 </CONTEXT>
@@ -531,6 +624,7 @@ Now, begin.
 "#,
             tools_section = tools_section,
             operating_system = operating_system,
+            shell_hint = shell_hint,
             working_dir = working_dir,
             memory = memory,
             behavioral_prompt = behavioral_prompt,
@@ -658,6 +752,7 @@ Now, begin.
                     Ok(()) => {
                         #[cfg(unix)]
                         {
+                            use std::os::unix::fs::PermissionsExt;
                             if let Err(e) = fs::set_permissions(&tool_path, fs::Permissions::from_mode(0o755)) {
                                 eprintln!("Warning: Failed to set executable bit: {}", e);
                             }
@@ -690,9 +785,11 @@ Now, begin.
         Ok(formatted_result)
     }
 
+    /// Parse history using XML-style CONTENT markers (handles legacy ``` format too)
     pub fn get_history(&self, limit: Option<usize>) -> Result<Vec<ChatMessage>> {
         let log_content = fs::read_to_string(&self.session_log_path).unwrap_or_default();
         let mut messages = Vec::new();
+        
         for section in log_content.split("\n## ").filter(|s| !s.trim().is_empty()) {
             if let Some((header, content_part)) = section.split_once('\n') {
                 let role = if header.starts_with("User Input") {
@@ -704,14 +801,38 @@ Now, begin.
                 } else {
                     None
                 };
+                
                 if let Some(role) = role {
-                    let content = content_part.trim_start_matches("```\n").trim_end_matches("\n```").trim().to_string();
+                    // Try new XML-style format first
+                    let content = if content_part.contains("<CONTENT>") && content_part.contains("</CONTENT>") {
+                        if let Some(start) = content_part.find("<CONTENT>") {
+                            if let Some(end) = content_part.find("</CONTENT>") {
+                                content_part[start + 9..end].trim().to_string()
+                            } else {
+                                content_part.trim().to_string()
+                            }
+                        } else {
+                            content_part.trim().to_string()
+                        }
+                    } else {
+                        // Legacy format: strip ``` markers
+                        content_part
+                            .trim()
+                            .strip_prefix("```")
+                            .unwrap_or(content_part.trim())
+                            .strip_suffix("```")
+                            .unwrap_or(content_part.trim())
+                            .trim()
+                            .to_string()
+                    };
+                    
                     if !content.is_empty() {
                         messages.push(ChatMessageBuilder::new(role).content(content).build());
                     }
                 }
             }
         }
+        
         if let Some(limit_val) = limit {
             if messages.len() > limit_val {
                 let start = messages.len() - limit_val;
@@ -758,4 +879,3 @@ Now, begin.
         out
     }
 }
- 
